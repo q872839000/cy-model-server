@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  model-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - UMS_HOST=0.0.0.0
+      - UMS_PORT=8000
+      - UMS_LOG_LEVEL=INFO
+      - UMS_MODELS_CONFIG_PATH=configs/config.yaml
+    volumes:
+      - ../configs:/app/configs:ro
+      - ../models:/app/models:ro  # 挂载模型目录
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G

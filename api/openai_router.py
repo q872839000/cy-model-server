@@ -15,28 +15,12 @@ API端点：
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel
 from typing import List, Any, Dict
-import asyncio
 from workers.model_worker import WORKER
 from core.exceptions import ModelServerException
 from starlette.responses import StreamingResponse
 import uuid
 
 router = APIRouter()
-
-
-def _get_model_manager(request):
-    """
-    获取模型管理器实例
-    
-    返回:
-        REGISTRY: 全局模型注册表，管理所有已加载的模型
-    """
-    # 使用 core.registry.REGISTRY 作为模型管理器
-    try:
-        from core.registry import REGISTRY
-        return REGISTRY
-    except Exception:
-        return None
 
 
 class ChatMessage(BaseModel):
@@ -82,24 +66,6 @@ class EmbeddingRequest(BaseModel):
     model: str
     input: List[str]
 
-def _messages_to_prompt(messages: List[Dict[str, Any]]) -> str:
-    """
-    将消息列表转换为提示词字符串
-    
-    参数:
-        messages: 消息字典列表
-        
-    返回:
-        str: 格式化的提示词文本
-    """
-    parts = []
-    for m in messages:
-        role = m.get('role', '')
-        content = m.get('content', '') or m.get('text', '')
-        parts.append(f"{role}: {content}")
-    return "\n".join(parts)
-
-
 @router.post('/v1/chat/completions')
 async def chat_completions(req: ChatCompletionRequest, request: Request):
     """
@@ -125,7 +91,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             # 非流式：一次性返回
             text = await WORKER.generate_chat(
                 model_name=req.model,
-                messages=[m.dict() for m in req.messages],
+                messages=[m.model_dump() for m in req.messages],
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
@@ -149,84 +115,48 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 }
             }
 
-        # 流式：真正的token级别流式输出
+        # 流式：SSE 格式输出
+        import orjson as _oj
+        import time as _time
+        
         async def event_generator():
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-            created = int(__import__('time').time())
+            created = int(_time.time())
             
-            # 发送role首块
-            first_chunk = {
-                "id": chunk_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": req.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"role": "assistant", "content": ""},
-                        "finish_reason": None
-                    }
-                ]
-            }
-            import orjson as _oj
-            yield f"data: {_oj.dumps(first_chunk).decode()}\n\n"
-            
-            # 真正的流式生成：逐token输出
-            try:
-                async for text_chunk in WORKER.generate_chat_stream(
-                    model_name=req.model,
-                    messages=[m.dict() for m in req.messages],
-                    max_tokens=req.max_tokens,
-                    temperature=req.temperature,
-                    top_p=req.top_p,
-                ):
-                    chunk = {
-                        "id": chunk_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": req.model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {"content": text_chunk},
-                                "finish_reason": None
-                            }
-                        ]
-                    }
-                    yield f"data: {_oj.dumps(chunk).decode()}\n\n"
-            except Exception as e:
-                # 如果生成过程中出错，发送错误信息
-                error_chunk = {
+            def make_chunk(delta: dict, finish_reason: str = None) -> str:
+                """构造 SSE chunk"""
+                return _oj.dumps({
                     "id": chunk_id,
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": req.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {},
-                            "finish_reason": "error"
-                        }
-                    ]
-                }
-                yield f"data: {_oj.dumps(error_chunk).decode()}\n\n"
+                    "choices": [{
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": finish_reason
+                    }]
+                }).decode()
+            
+            # 发送 role 首块
+            yield f"data: {make_chunk({'role': 'assistant', 'content': ''})}\n\n"
+            
+            # 流式生成：使用统一的 generate_chat 接口
+            try:
+                async for text_chunk in WORKER.generate_chat(
+                    model_name=req.model,
+                    messages=[m.model_dump() for m in req.messages],
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    stream=True,
+                ):
+                    yield f"data: {make_chunk({'content': text_chunk})}\n\n"
+            except Exception:
+                yield f"data: {make_chunk({}, 'error')}\n\n"
                 raise
             
-            # 发送结束块
-            done_chunk = {
-                "id": chunk_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": req.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "stop"
-                    }
-                ]
-            }
-            yield f"data: {_oj.dumps(done_chunk).decode()}\n\n"
+            # 结束块
+            yield f"data: {make_chunk({}, 'stop')}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")

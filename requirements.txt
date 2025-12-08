@@ -1,0 +1,28 @@
+fastapi==0.112.2
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.6.1
+PyYAML==6.0.2
+prometheus-client==0.21.0
+prometheus-fastapi-instrumentator==6.1.0
+httpx==0.27.2
+loguru==0.7.2
+orjson==3.10.7
+
+# Core ML stack
+transformers==4.52.1
+accelerate==1.10.1
+# Keep tokenizers/safetensors in sync with transformers
+tokenizers==0.21.0
+safetensors==0.4.5
+sentence-transformers==3.1.1
+sentencepiece==0.2.0
+numpy==1.24.3
+
+# Optional GPU/quantization (may require specific CUDA/OS)
+# bitsandbytes==0.43.3
+# vllm==0.6.2
+
+# IMPORTANT: Install torch separately to match your CUDA (Windows/GPU)
+# Example (CUDA 12.1):
+# pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio

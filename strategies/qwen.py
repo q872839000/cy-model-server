@@ -14,7 +14,3 @@ class QwenChatStrategy(LLMStrategy):
 			parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
 		parts.append("<|im_start|>assistant\n")
 		return "\n".join(parts)
-
-	def generate(self, engine, messages: List[Dict], **kwargs) -> str:
-		prompt = self.apply_chat_template(messages)
-		return engine.generate(prompt, **kwargs)

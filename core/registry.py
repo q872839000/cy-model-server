@@ -37,43 +37,71 @@ class RerankerConfig:
 
 
 class ModelRegistry:
-	"""全局模型注册表：负责按配置加载与管理 LLM/Embedding/Reranker 引擎实例。"""
+	"""模型注册表，管理所有模型引擎实例。"""
 
 	def __init__(self) -> None:
-		self._llms: Dict[str, LLMEngine] = {}
-		self._embeddings: Dict[str, EmbeddingEngine] = {}
-		self._rerankers: Dict[str, RerankerEngine] = {}
-		self._llm_strategies: Dict[str, str] = {}  # model_name -> strategy key
+		self._llms: Dict[str, LLMEngine] = {}  # 模型名称 -> 引擎实例
+		self._embeddings: Dict[str, EmbeddingEngine] = {}  # 模型名称 -> 引擎实例
+		self._rerankers: Dict[str, RerankerEngine] = {}  # 模型名称 -> 引擎实例
+		# 默认模型（优先使用第一个加载的模型）
 		self._default_llm: Optional[str] = None
 		self._default_embedding: Optional[str] = None
 		self._default_reranker: Optional[str] = None
+		# LLM对话策略
+		self._llm_strategies: Dict[str, str] = {}
 
 	def get_llm(self, name: Optional[str]) -> Optional[LLMEngine]:
-		key = name or self._default_llm
-		return self._llms.get(key) if key else None
+		"""获取指定名称的LLM引擎实例。"""
+		if name is None:
+			name = self._default_llm
+		return self._llms.get(name)
 
 	def get_llm_strategy_key(self, name: Optional[str]) -> Optional[str]:
-		key = name or self._default_llm
-		return self._llm_strategies.get(key) if key else None
+		"""获取指定名称的LLM对话策略。"""
+		if name is None:
+			name = self._default_llm
+		return self._llm_strategies.get(name)
 
 	def get_embedding(self, name: Optional[str]) -> Optional[EmbeddingEngine]:
-		key = name or self._default_embedding
-		return self._embeddings.get(key) if key else None
+		"""获取指定名称的Embedding引擎实例。"""
+		if name is None:
+			name = self._default_embedding
+		return self._embeddings.get(name)
 
 	def get_reranker(self, name: Optional[str]) -> Optional[RerankerEngine]:
-		key = name or self._default_reranker
-		return self._rerankers.get(key) if key else None
+		"""获取指定名称的Reranker引擎实例。"""
+		if name is None:
+			name = self._default_reranker
+		return self._rerankers.get(name)
 
 	def has_any_llm(self) -> bool:
-		return bool(self._llms)
+		"""是否加载了任何LLM模型。"""
+		return len(self._llms) > 0
 
 	def has_any_embedding(self) -> bool:
-		return bool(self._embeddings)
+		"""是否加载了任何Embedding模型。"""
+		return len(self._embeddings) > 0
 
 	def has_any_reranker(self) -> bool:
-		return bool(self._rerankers)
+		"""是否加载了任何Reranker模型。"""
+		return len(self._rerankers) > 0
+
+	# === 公开的计数方法 ===
+	def llm_count(self) -> int:
+		"""返回已加载的LLM模型数量。"""
+		return len(self._llms)
+
+	def embedding_count(self) -> int:
+		"""返回已加载的Embedding模型数量。"""
+		return len(self._embeddings)
+
+	def reranker_count(self) -> int:
+		"""返回已加载的Reranker模型数量。"""
+		return len(self._rerankers)
 
 	def clear(self) -> None:
+		"""清空所有模型。"""
+		# 清空注册表（让Python GC自然回收模型对象）
 		self._llms.clear()
 		self._embeddings.clear()
 		self._rerankers.clear()
@@ -83,25 +111,24 @@ class ModelRegistry:
 		self._default_reranker = None
 
 	def _validate_model_path(self, model_path: str, model_name: str) -> bool:
-		"""验证模型路径是否存在"""
+		"""验证模型路径是否存在。"""
 		path = Path(model_path)
 		if not path.exists():
-			logger.error("模型路径不存在: {} -> {}", model_name, model_path)
-			return False
-		if not path.is_dir():
-			logger.error("模型路径不是目录: {} -> {}", model_name, model_path)
-			return False
-		# 检查是否有config.json文件
-		config_file = path / "config.json"
-		if not config_file.exists():
-			logger.error("模型配置文件不存在: {} -> {}", model_name, config_file)
+			logger.error('模型路径不存在: {} -> {}', model_name, model_path)
 			return False
 		return True
 
 	def load_from_config(self, settings: AppSettings) -> None:
 		"""从 YAML 配置加载所有模型。严禁硬编码。"""
+		# 如果已经加载过模型，跳过重复加载
+		if self._llms or self._embeddings or self._rerankers:
+			logger.info("模型已经加载过，跳过重复加载")
+			return
+		
 		cfg = load_yaml(settings.models_config_path) or {}
 		engine_defaults = cfg.get("engine_defaults", {})
+		default_device = engine_defaults.get("device")
+		default_dtype = engine_defaults.get("dtype")
 
 		# LLMs
 		llms_cfg = cfg.get("llms", [])
@@ -111,14 +138,14 @@ class ModelRegistry:
 				engine=item.get("engine") or engine_defaults.get("llm_engine", "transformers"),
 				path=item["path"],
 				chat_strategy=item.get("chat_strategy", "generic"),
-				dtype=item.get("dtype"),
-				device=item.get("device"),
+				dtype=item.get("dtype") or default_dtype,
+				device=item.get("device") or default_device,
 				gen_params=item.get("gen_params", {}),
 			)
 			# 验证模型路径
 			if not self._validate_model_path(llm_conf.path, llm_conf.name):
 				continue
-				
+			
 			engine = self._build_llm_engine(llm_conf)
 			try:
 				if hasattr(engine, '_ensure_loaded'):
@@ -140,12 +167,12 @@ class ModelRegistry:
 				name=item["name"],
 				engine=item.get("engine") or engine_defaults.get("embedding_engine", "transformers"),
 				path=item["path"],
-				device=item.get("device"),
+				device=item.get("device") or default_device,
 			)
 			# 验证模型路径
 			if not self._validate_model_path(emb_conf.path, emb_conf.name):
 				continue
-				
+			
 			engine = self._build_embedding_engine(emb_conf)
 			try:
 				if hasattr(engine, '_ensure_loaded'):
@@ -166,12 +193,12 @@ class ModelRegistry:
 				name=item["name"],
 				engine=item.get("engine") or engine_defaults.get("reranker_engine", "transformers"),
 				path=item["path"],
-				device=item.get("device"),
+				device=item.get("device") or default_device,
 			)
 			# 验证模型路径
 			if not self._validate_model_path(r_conf.path, r_conf.name):
 				continue
-				
+			
 			engine = self._build_reranker_engine(r_conf)
 			try:
 				if hasattr(engine, '_ensure_loaded'):
@@ -188,20 +215,26 @@ class ModelRegistry:
 	def _build_llm_engine(self, conf: LLMConfig) -> LLMEngine:
 		if conf.engine == "transformers":
 			return TransformersLLMEngine(model_path=conf.path, dtype=conf.dtype, device=conf.device, gen_params=conf.gen_params or {})
-		if conf.engine == "vllm":
+		elif conf.engine == "vllm":
 			return VLLMLLMEngine(model_path=conf.path, dtype=conf.dtype, device=conf.device, gen_params=conf.gen_params or {})
-		raise ValueError(f"Unsupported LLM engine: {conf.engine}")
+		else:
+			logger.warning(f"未知的 LLM 引擎类型: {conf.engine}，默认使用 transformers")
+			return TransformersLLMEngine(model_path=conf.path, dtype=conf.dtype, device=conf.device, gen_params=conf.gen_params or {})
 
 	def _build_embedding_engine(self, conf: EmbeddingConfig) -> EmbeddingEngine:
 		if conf.engine == "transformers":
 			return TransformersEmbeddingEngine(model_path=conf.path, device=conf.device)
-		raise ValueError(f"Unsupported Embedding engine: {conf.engine}")
+		else:
+			logger.warning(f"未知的 Embedding 引擎类型: {conf.engine}，默认使用 transformers")
+			return TransformersEmbeddingEngine(model_path=conf.path, device=conf.device)
 
 	def _build_reranker_engine(self, conf: RerankerConfig) -> RerankerEngine:
 		if conf.engine == "transformers":
 			return TransformersRerankerEngine(model_path=conf.path, device=conf.device)
-		raise ValueError(f"Unsupported Reranker engine: {conf.engine}")
+		else:
+			logger.warning(f"未知的 Reranker 引擎类型: {conf.engine}，默认使用 transformers")
+			return TransformersRerankerEngine(model_path=conf.path, device=conf.device)
 
 
-# 全局注册表实例（简单单例）
+# 全局注册表实例
 REGISTRY = ModelRegistry()

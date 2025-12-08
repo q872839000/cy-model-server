@@ -1,5 +1,6 @@
+from contextlib import asynccontextmanager
+
 from api.openai_router import router as openai_router
-from api.retrieval_router import router as retrieval_router
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,19 +28,27 @@ class ORJSONResponse(JSONResponse):
 		return orjson.dumps(content, option=orjson.OPT_SERIALIZE_NUMPY)
 
 
-
-
-def _init_registry(settings: AppSettings) -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
 	"""
-	按配置文件加载全局模型注册表：
-	- 清空旧注册；
-	- 从 YAML 路径读取引擎与模型配置；
-	- 严禁在此处硬编码任何模型参数。
+	FastAPI 生命周期管理：
+	- startup: 加载模型注册表（只在工作进程中执行一次）
+	- shutdown: 清理资源
 	"""
+	# Startup: 加载模型
+	settings = load_settings()
+	try:
+		REGISTRY.load_from_config(settings)
+		logger.info("模型注册表已加载（LLM:{} Emb:{} Rerank:{})",
+				REGISTRY.llm_count(), REGISTRY.embedding_count(), REGISTRY.reranker_count())
+	except Exception as e:
+		logger.error("加载模型配置失败: {}", e)
+	
+	yield  # 应用运行中
+	
+	# Shutdown: 清理资源
+	logger.info("服务关闭，清理资源...")
 	REGISTRY.clear()
-	REGISTRY.load_from_config(settings)
-	logger.info("模型注册表已加载（LLM:{} Emb:{} Rerank:{}）",
-				REGISTRY.has_any_llm(), REGISTRY.has_any_embedding(), REGISTRY.has_any_reranker())
 
 
 def create_app(settings: AppSettings | None = None) -> FastAPI:
@@ -47,20 +56,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 	应用工厂：创建并返回 FastAPI 实例。
 	- 初始化日志（使用可配置级别与格式）
 	- 读取环境配置（优先级：环境变量 > YAML(app段) > 默认值）
-	- 尝试加载模型注册表
+	- 模型加载在 lifespan 中完成（只在工作进程启动时执行）
 	- 暴露 Prometheus 指标
 	- 挂载 API 路由（若存在）
 	- 注册健康检查与全局异常处理
 	"""
 	settings = settings or load_settings()
 	setup_logging(level=settings.log_level, log_format=settings.log_format)
-
-	# 加载模型注册表（按配置）
-	try:
-		_init_registry(settings)
-	except Exception as e:
-		# 注册表加载失败不阻断服务启动（便于先起服务再排查配置），但会记录错误
-		logger.error("加载模型配置失败: {}", e)
 
 	app = FastAPI(
 		title="CY Model Server",
@@ -69,6 +71,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 		default_response_class=ORJSONResponse,
 		docs_url="/docs" if settings.env == "dev" else None,
 		redoc_url="/redoc" if settings.env == "dev" else None,
+		lifespan=lifespan,
 	)
 
 	# 生产级中间件
@@ -84,9 +87,9 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 			"status": "ok",
 			"timestamp": time.time(),
 			"models": {
-				"llm_count": len(REGISTRY._llms),
-				"embedding_count": len(REGISTRY._embeddings),
-				"reranker_count": len(REGISTRY._rerankers),
+				"llm_count": REGISTRY.llm_count(),
+				"embedding_count": REGISTRY.embedding_count(),
+				"reranker_count": REGISTRY.reranker_count(),
 			}
 		}
 
@@ -190,15 +193,7 @@ app = create_app()
 
 # 注册路由
 app.include_router(openai_router)
-app.include_router(retrieval_router)
 
-# 注册高级检索路由
-from api.advanced_retrieval_router import router as advanced_retrieval_router
-app.include_router(advanced_retrieval_router)
-
-# 注册RAG路由
-from api.rag_router import router as rag_router
-app.include_router(rag_router)
 
 
 if __name__ == "__main__":
@@ -208,4 +203,4 @@ if __name__ == "__main__":
 	"""
 	settings = load_settings()
 	from uvicorn import run
-	run("main:app", host=settings.host, port=settings.port, reload=True)
+	run("main:app", host=settings.host, port=settings.port)

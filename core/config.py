@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from typing import Optional, Any, Dict
 from pathlib import Path
@@ -21,8 +21,7 @@ class AppSettings(BaseSettings):
 	log_format: Optional[str] = Field(default=None)
 	models_config_path: str = Field(default="configs/config.yaml")
 
-	class Config:
-		env_prefix = "UMS_"  # 例如 UMS_MODELS_CONFIG_PATH 覆盖 models_config_path
+	model_config = SettingsConfigDict(env_prefix="UMS_")  # 例如 UMS_MODELS_CONFIG_PATH 覆盖 models_config_path
 
 
 def load_settings() -> AppSettings:

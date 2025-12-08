@@ -1,12 +1,10 @@
 from typing import Dict
-from loguru import logger
 
 from core.registry import REGISTRY
 from strategies.base import GenericChatStrategy, LLMStrategy
 from strategies.glm import GLMChatStrategy
 from strategies.qwen import QwenChatStrategy
 from strategies.deepseek import DeepseekChatStrategy
-from services.retrieval_service import RetrievalService
 
 
 class ServiceContainer:
@@ -19,7 +17,6 @@ class ServiceContainer:
 			"qwen": QwenChatStrategy(),
 			"deepseek": DeepseekChatStrategy(),
 		}
-		self._retrieval_service = RetrievalService()
 
 	def get_llm_and_strategy(self, model_name: str | None):
 		engine = REGISTRY.get_llm(model_name)
@@ -33,8 +30,6 @@ class ServiceContainer:
 	def get_reranker(self, model_name: str | None):
 		return REGISTRY.get_reranker(model_name)
 
-	def get_retrieval_service(self):
-		return self._retrieval_service
 
 
 CONTAINER = ServiceContainer()

@@ -8,89 +8,36 @@ app:
   workers: 1  # 模型服务建议单worker，避免内存重复加载
   max_request_size: 10485760  # 10MB
   request_timeout: 300  # 5分钟
-# 全局推理引擎默认设置
+
+# 全局推理引擎默认设置（模型未指定时使用）
 engine_defaults:
   llm_engine: transformers           # 可选: transformers | vllm
   embedding_engine: transformers
   reranker_engine: transformers
+  device: cuda                       # 默认设备
+  dtype: float32                     # 默认精度（可选: float16 | bfloat16 | null表示全精度）
 
-# MySQL 数据库配置（存储文档原文内容）
-mysql:
-  host: 127.0.0.1
-  port: 3306
-  user: root
-  password: 123456  # 生产环境建议通过环境变量设置
-  database: knowledge
-  charset: utf8mb4
-  # 连接池配置
-  pool_size: 10  # 连接池大小
-  max_overflow: 20  # 超出 pool_size 后最多创建的连接数
-  pool_timeout: 30  # 获取连接的超时时间（秒）
-  pool_recycle: 3600  # 连接回收时间（秒），防止连接超时
-
-# 向量存储（Milvus/Zilliz）配置（生产环境建议通过环境变量覆盖敏感信息）
-vector_store:
-  provider: milvus
-  milvus:
-    uri: "http://127.0.0.1:19530"   # 本地 Milvus；云服务填 HTTPS 入口
-    user: ""                        # Zilliz Cloud 需要
-    password: ""                    # Zilliz Cloud 需要
-    secure: false                    # 云上 HTTPS 设置为 true
-    database: default
-    collection_prefix: ""       # 集合名前缀，按项目/环境区分
-    # 索引与向量度量
-    metric_type: IP                  # 可选: L2 | IP (注意：Milvus不支持COSINE，使用IP代替)
-    index_type: IVF_FLAT             # 可选: IVF_FLAT | HNSW | AUTOINDEX
-    nlist: 1024                      # IVF 参数
-    M: 16                            # HNSW 参数
-    efConstruction: 200              # HNSW 参数
-    shard_num: 1
-    consistency_level: Session       # Strong | Bounded | Session | Eventually
-    timeout: 30                      # 超时（秒）
-    # 字段与集合行为
-    fields:
-      id: id
-      content: content
-      metadata: metadata
-      vector: vector
-    search:
-      max_top_k: 100                 # 单次搜索的安全上限
-      nprobe: 16                     # IVF 搜索参数
-      ef: 200                         # HNSW 搜索参数（如适用）
-      fetch_payload_in_search: false # 搜索阶段是否直接取出内容字段（建议 false）
-
-# 本地模型配置示例（请根据你的磁盘路径修改）
-# LLM 列表：name 必须唯一；chat_strategy: qwen|glm|deepseek|generic
-#llms:
-# - name: Qwen2-0___5B-Instruct
-#   engine: transformers
-#   path: E:\\Ai\\models\\Qwen\\Qwen2-0___5B-Instruct   # 修改为你的本地模型目录
-#   chat_strategy: qwen
-#   dtype: float16
-#   device: cuda
-#   gen_params:
-#     max_tokens: 512
-#     temperature: 0.7
-#     top_p: 0.95
+# LLM 模型列表
+# - name: 必须唯一，用于 API 调用时指定模型
+# - path: 本地模型路径
+# - chat_strategy: 对话模板策略（qwen|glm|deepseek|generic）
+# - engine/device/dtype: 可选，未指定时使用 engine_defaults
+# - gen_params: 生成参数默认值
+llms:
+  - name: Qwen2-0___5B-Instruct
+    path: E:\\Ai\\models\\Qwen\\Qwen2-0___5B-Instruct
+    chat_strategy: qwen
+    gen_params:
+      max_tokens: 512
+      temperature: 0.7
+      top_p: 0.95
 
 # Embedding 模型列表
 embeddings:
   - name: bge-large-zh
-    engine: transformers
     path: E:\\Ai\\models\\BAAI\\bge-large-zh
-    device: cuda
 
 # Reranker 模型列表
 rerankers:
   - name: bge-reranker-base
-    engine: transformers
     path: E:\\Ai\\models\\BAAI\\bge-reranker-base
-    device: cuda
-
-# PDF 解析器配置
-pdf_parser:
-  # XGBoost 段落拼接模型路径（用于判断段落是否应该合并）
-  # 如果未设置或文件不存在，将使用规则判断
-  updown_concat_model_path: "E:\\Ai\\models\\updown_concat_xgb.ubj"  # 例如: E:\\Ai\\models\\updown_concat_xgb.model
-  # OCR 语言设置（pytesseract）
-  ocr_lang: "chi_sim"  # 中文: "chi_sim"，英文: "eng"，中英混合: "chi_sim+eng"

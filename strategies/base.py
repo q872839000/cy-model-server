@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Iterator
+from typing import List, Dict, Iterator, Union
 
 
 class LLMStrategy(ABC):
@@ -10,15 +10,22 @@ class LLMStrategy(ABC):
 		"""将消息列表转换为模型输入的prompt"""
 		...
 
-	@abstractmethod
-	def generate(self, engine, messages: List[Dict], **kwargs) -> str:
-		"""同步生成完整响应"""
-		...
-	
-	def generate_stream(self, engine, messages: List[Dict], **kwargs) -> Iterator[str]:
-		"""流式生成响应（默认实现）"""
+	def generate(self, engine, messages: List[Dict], stream: bool = False, **kwargs) -> Union[str, Iterator[str]]:
+		"""
+		生成响应（统一接口，符合 OpenAI 范式）
+		
+		Args:
+			engine: LLM引擎实例
+			messages: 消息列表
+			stream: 是否流式输出
+			**kwargs: 其他生成参数
+		
+		Returns:
+			stream=False: 返回完整文本
+			stream=True: 返回文本片段迭代器
+		"""
 		prompt = self.apply_chat_template(messages)
-		yield from engine.generate_stream(prompt, **kwargs)
+		return engine.generate(prompt, stream=stream, **kwargs)
 
 
 class GenericChatStrategy(LLMStrategy):
@@ -32,7 +39,3 @@ class GenericChatStrategy(LLMStrategy):
 			parts.append(f"{role}: {content}")
 		parts.append("assistant:")
 		return "\n".join(parts)
-
-	def generate(self, engine, messages: List[Dict], **kwargs) -> str:
-		prompt = self.apply_chat_template(messages)
-		return engine.generate(prompt, **kwargs)

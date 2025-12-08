@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>聊天补全测试工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            padding: 30px;
+        }
+
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 25px;
+            font-size: 28px;
+            text-align: center;
+        }
+
+        .config-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            border: 1px solid #e9ecef;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            font-weight: 500;
+            color: #495057;
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+
+        input, textarea, select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid #d1d3e2;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .inline-group {
+            display: flex;
+            gap: 15px;
+        }
+
+        .inline-group .form-group {
+            flex: 1;
+        }
+
+        .radio-group {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .radio-group label {
+            font-weight: normal;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 0;
+        }
+
+        .radio-group input[type="radio"] {
+            width: auto;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .response-section {
+            margin-top: 25px;
+        }
+
+        .response-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .response-title {
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .status-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .response-content {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 100px;
+            white-space: pre-wrap;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            color: #212529;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .streaming-cursor::after {
+            content: '|';
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        .info-panel {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            color: #004085;
+        }
+
+        .error-message {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        .metadata {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #6c757d;
+        }
+
+        .metadata-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 聊天补全测试工具</h1>
+
+        <div class="info-panel">
+            <strong>使用说明：</strong>
+            <br>• 流式模式会逐字显示响应内容，类似 ChatGPT 的打字效果
+            <br>• 非流式模式会等待完整响应后一次性显示
+            <br>• 留空模型名称会自动获取并选择第一个可用的 LLM 模型
+        </div>
+
+        <div class="config-section">
+            <div class="form-group">
+                <label for="baseUrl">API 地址</label>
+                <input type="text" id="baseUrl" value="http://localhost:8000" placeholder="http://localhost:8000">
+            </div>
+
+            <div class="form-group">
+                <label for="modelName">模型名称（留空自动获取）</label>
+                <input type="text" id="modelName" placeholder="例如：llama-2-7b-chat">
+            </div>
+
+            <div class="inline-group">
+                <div class="form-group">
+                    <label for="maxTokens">Max Tokens</label>
+                    <input type="number" id="maxTokens" value="100" min="1" max="4096">
+                </div>
+
+                <div class="form-group">
+                    <label for="temperature">Temperature</label>
+                    <input type="number" id="temperature" value="0.7" min="0" max="2" step="0.1">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>测试模式</label>
+                <div class="radio-group">
+                    <label>
+                        <input type="radio" name="streamMode" value="true" checked>
+                        流式（Streaming）
+                    </label>
+                    <label>
+                        <input type="radio" name="streamMode" value="false">
+                        非流式（Non-Streaming）
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="systemPrompt">系统提示词（System Prompt）</label>
+                <textarea id="systemPrompt">你是一个有帮助的助手。</textarea>
+            </div>
+
+            <div class="form-group">
+                <label for="userMessage">用户消息（User Message）</label>
+                <textarea id="userMessage">请用一句话介绍自己。</textarea>
+            </div>
+
+            <button id="sendBtn" onclick="sendRequest()">发送请求</button>
+        </div>
+
+        <div class="response-section">
+            <div class="response-header">
+                <span class="response-title">响应内容</span>
+                <span id="statusBadge" class="status-badge" style="display: none;"></span>
+            </div>
+            <div id="responseContent" class="response-content">点击"发送请求"开始测试...</div>
+            <div id="errorMessage" class="error-message" style="display: none;"></div>
+            <div id="metadata" class="metadata" style="display: none;">
+                <div class="metadata-item">
+                    <span>⏱</span> 耗时: <span id="elapsedTime">0</span>ms
+                </div>
+                <div class="metadata-item">
+                    <span>📊</span> Tokens: <span id="tokenCount">0</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isStreaming = false;
+        let tokenCount = 0;
+        let startTime = 0;
+
+        async function sendRequest() {
+            // 防止重复点击
+            if (isStreaming) return;
+
+            // 获取配置
+            const baseUrl = document.getElementById('baseUrl').value.trim();
+            let modelName = document.getElementById('modelName').value.trim();
+            const maxTokens = parseInt(document.getElementById('maxTokens').value);
+            const temperature = parseFloat(document.getElementById('temperature').value);
+            const stream = document.querySelector('input[name="streamMode"]:checked').value === 'true';
+            const systemPrompt = document.getElementById('systemPrompt').value;
+            const userMessage = document.getElementById('userMessage').value;
+            const sendBtn = document.getElementById('sendBtn');
+
+            // 重置状态
+            startTime = Date.now();
+            tokenCount = 0;
+            isStreaming = true;
+            sendBtn.disabled = true;
+            sendBtn.textContent = '请求中...';
+
+            const responseContent = document.getElementById('responseContent');
+            const statusBadge = document.getElementById('statusBadge');
+            const errorMessage = document.getElementById('errorMessage');
+            const metadata = document.getElementById('metadata');
+
+            responseContent.textContent = '';
+            responseContent.classList.remove('streaming-cursor');
+            errorMessage.style.display = 'none';
+            metadata.style.display = 'none';
+            statusBadge.style.display = 'inline-block';
+            statusBadge.className = 'status-badge status-pending';
+            statusBadge.textContent = '请求中...';
+
+            try {
+                // 如果没有指定模型，先获取可用模型
+                if (!modelName) {
+                    statusBadge.textContent = '获取模型列表...';
+                    const modelsResp = await fetch(`${baseUrl}/v1/models`);
+                    if (!modelsResp.ok) throw new Error(`获取模型失败: ${modelsResp.status}`);
+
+                    const modelsData = await modelsResp.json();
+                    const models = modelsData.data || [];
+
+                    // 查找 LLM 模型（排除 bge、embed、rerank 等）
+                    const llmModel = models.find(m => {
+                        const mid = m.id.toLowerCase();
+                        return !['bge', 'embed', 'rerank'].some(kw => mid.includes(kw));
+                    });
+
+                    if (!llmModel) throw new Error('未找到可用的 LLM 模型');
+                    modelName = llmModel.id;
+
+                    // 自动填充到输入框
+                    document.getElementById('modelName').value = modelName;
+                }
+
+                // 准备请求 payload
+                const payload = {
+                    model: modelName,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userMessage }
+                    ],
+                    max_tokens: maxTokens,
+                    temperature: temperature,
+                    stream: stream
+                };
+
+                // 发送请求
+                const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+
+                // 处理响应
+                if (stream) {
+                    await handleStreamingResponse(response, responseContent, statusBadge);
+                } else {
+                    await handleNonStreamingResponse(response, responseContent, statusBadge);
+                }
+
+                // 更新元数据
+                const elapsedTime = Date.now() - startTime;
+                document.getElementById('elapsedTime').textContent = elapsedTime;
+                document.getElementById('tokenCount').textContent = tokenCount;
+                metadata.style.display = 'flex';
+
+            } catch (error) {
+                console.error('请求错误:', error);
+                errorMessage.textContent = `❌ 错误: ${error.message}`;
+                errorMessage.style.display = 'block';
+                statusBadge.className = 'status-badge status-error';
+                statusBadge.textContent = '请求失败';
+            } finally {
+                isStreaming = false;
+                sendBtn.disabled = false;
+                sendBtn.textContent = '发送请求';
+                responseContent.classList.remove('streaming-cursor');
+            }
+        }
+
+        async function handleStreamingResponse(response, contentElement, statusBadge) {
+            statusBadge.className = 'status-badge status-success';
+            statusBadge.textContent = '流式响应中...';
+            contentElement.classList.add('streaming-cursor');
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const dataStr = line.slice(6);
+
+                        if (dataStr === '[DONE]') {
+                            statusBadge.textContent = '流式完成';
+                            return;
+                        }
+
+                        try {
+                            const data = JSON.parse(dataStr);
+                            const delta = data.choices?.[0]?.delta || {};
+                            const content = delta.content || '';
+
+                            if (content) {
+                                contentElement.textContent += content;
+                                tokenCount++;
+                            }
+                        } catch (e) {
+                            console.warn('解析 JSON 失败:', dataStr);
+                        }
+                    }
+                }
+            }
+        }
+
+        async function handleNonStreamingResponse(response, contentElement, statusBadge) {
+            statusBadge.className = 'status-badge status-success';
+            statusBadge.textContent = '请求成功';
+
+            const data = await response.json();
+            const content = data.choices?.[0]?.message?.content || '';
+
+            // 简单估算 token 数量（按空格和标点分割）
+            tokenCount = content.split(/\s+/).length;
+
+            contentElement.textContent = content;
+        }
+    </script>
+</body>
+</html>

@@ -14,7 +14,3 @@ class DeepseekChatStrategy(LLMStrategy):
 			parts.append(f"{role.upper()}: {content}")
 		parts.append("ASSISTANT:")
 		return "\n".join(parts)
-
-	def generate(self, engine, messages: List[Dict], **kwargs) -> str:
-		prompt = self.apply_chat_template(messages)
-		return engine.generate(prompt, **kwargs)

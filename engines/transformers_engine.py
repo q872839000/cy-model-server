@@ -8,6 +8,7 @@
 """
 
 from typing import List, Optional, Dict, Any, Iterator
+import torch
 from loguru import logger
 
 from engines.base import LLMEngine, EmbeddingEngine, RerankerEngine
@@ -26,40 +27,47 @@ class TransformersLLMEngine(LLMEngine):
         self.dtype = dtype
         self.device = device
         self.gen_params = gen_params or {}
-        self._pipe = None
         self._tokenizer = None
         self._model = None
+        self._device = None
 
     def _ensure_loaded(self) -> None:
-        """在首次调用时加载 transformers pipeline，安全捕获导入错误并给出友好提示。"""
-        if self._pipe is not None:
+        """在首次调用时加载模型，安全捕获导入错误并给出友好提示。"""
+        if self._model is not None:
             return
         try:
-            # 导入放在运行时，避免未安装时启动失败
-            from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-            import torch
-        except Exception as e:
-            raise RuntimeError("transformers / torch 未安装或不可用，请安装相关依赖") from e
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+        except ImportError as e:
+            raise RuntimeError("transformers 未安装，请安装相关依赖") from e
 
         logger.info("Loading Transformers LLM from {} (device={}, dtype={})", self.model_path, self.device, self.dtype)
-        # 这里使用 pipeline 简化，生产可替换为更细粒度的模型/生成代码
+        
+        # 解析dtype
+        torch_dtype = None
+        if self.dtype == 'float16':
+            torch_dtype = torch.float16
+        elif self.dtype == 'bfloat16':
+            torch_dtype = torch.bfloat16
+        
+        # 解析device
+        use_cuda = self.device and 'cuda' in self.device.lower()
+        device = self.device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        
         tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
             self.model_path,
-            device_map='auto' if (self.device and 'cuda' in (self.device or '').lower()) else None,
-            torch_dtype=getattr(__import__('torch'), 'float16') if self.dtype == 'float16' else None,
+            device_map='auto' if use_cuda else None,
+            torch_dtype=torch_dtype,
             trust_remote_code=True
         )
-        device = self.device or ('cuda' if getattr(__import__('torch'), 'cuda').is_available() else 'cpu')
+        
         self._tokenizer = tokenizer
-        # 创建一个简单的生成函数，不使用 pipeline 保留更多控制
         self._model = model
         self._device = device
 
-    def generate(self, prompt: str, **kwargs) -> str:
-        """生成文本，仅返回 completion（不包含提示词）。支持 max_tokens/temperature/top_p。"""
+    def _generate(self, prompt: str, **kwargs) -> str:
+        """非流式生成文本"""
         self._ensure_loaded()
-        import torch
         max_new_tokens = kwargs.get('max_tokens', self.gen_params.get('max_tokens', 128))
         temperature = kwargs.get('temperature', self.gen_params.get('temperature', 0.0))
         top_p = kwargs.get('top_p', self.gen_params.get('top_p', 1.0))
@@ -71,7 +79,7 @@ class TransformersLLMEngine(LLMEngine):
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=temperature > 0.0,
-                temperature=temperature,
+                temperature=temperature if temperature > 0.0 else 1.0,
                 top_p=top_p,
             )
         # 仅解码新增部分（去掉提示词）
@@ -79,10 +87,9 @@ class TransformersLLMEngine(LLMEngine):
         text = self._tokenizer.decode(generated_ids, skip_special_tokens=True)
         return text.strip()
     
-    def generate_stream(self, prompt: str, **kwargs) -> Iterator[str]:
+    def _generate_stream(self, prompt: str, **kwargs) -> Iterator[str]:
         """流式生成文本（token级别的真实流式输出）"""
         self._ensure_loaded()
-        import torch
         from transformers import TextIteratorStreamer
         from threading import Thread
         
@@ -91,12 +98,11 @@ class TransformersLLMEngine(LLMEngine):
         top_p = kwargs.get('top_p', self.gen_params.get('top_p', 1.0))
 
         inputs = self._tokenizer(prompt, return_tensors='pt').to(self._device)
-        input_length = int(inputs['input_ids'].shape[-1])
         
         # 创建文本流迭代器
         streamer = TextIteratorStreamer(
             self._tokenizer, 
-            skip_prompt=True,  # 跳过提示词
+            skip_prompt=True,
             skip_special_tokens=True
         )
         
@@ -110,7 +116,7 @@ class TransformersLLMEngine(LLMEngine):
             top_p=top_p,
         )
         
-        # 在单独的线程中运行生成，避免阻塞
+        # 在单独的线程中运行生成
         thread = Thread(target=self._model.generate, kwargs=generation_kwargs)
         thread.start()
         
@@ -137,7 +143,7 @@ class TransformersEmbeddingEngine(EmbeddingEngine):
             from sentence_transformers import SentenceTransformer
         except Exception as e:
             raise RuntimeError("sentence-transformers 未安装，请安装 sentence-transformers") from e
-        device = self.device or ('cuda' if __import__('torch').cuda.is_available() else 'cpu')
+        device = self.device or ('cuda' if torch.cuda.is_available() else 'cpu')
         logger.info("Loading embedding model {} on device {}", self.model_path, device)
         self._model = SentenceTransformer(self.model_path, device=device)
 
@@ -163,7 +169,7 @@ class TransformersRerankerEngine(RerankerEngine):
             from sentence_transformers import CrossEncoder
         except Exception as e:
             raise RuntimeError("sentence-transformers 的 CrossEncoder 不可用，请检查依赖") from e
-        device = self.device or ('cuda' if __import__('torch').cuda.is_available() else 'cpu')
+        device = self.device or ('cuda' if torch.cuda.is_available() else 'cpu')
         logger.info("Loading reranker CrossEncoder {} on device {}", self.model_path, device)
         self._model = CrossEncoder(self.model_path, device=device)
 

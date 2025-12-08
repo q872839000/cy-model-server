@@ -21,7 +21,15 @@ def setup_logging(level: str = "INFO", log_format: Optional[str] = None) -> None
 	- level: 日志级别（TRACE/DEBUG/INFO/WARNING/ERROR/CRITICAL）
 	- log_format: 可选的自定义格式；为空则使用默认格式
 	"""
-	fmt = log_format or "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {process} | {name}:{function}:{line} - {message}"
+	# 检查是否是子进程（uvicorn reload模式下）
+	is_child_process = os.getenv('IS_CHILD_PROCESS') == '1'
+	
+	# 为不同进程设置不同的日志格式
+	if is_child_process:
+		fmt = log_format or "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | CHILD-{process} | {name}:{function}:{line} - {message}"
+	else:
+		fmt = log_format or "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | MAIN-{process} | {name}:{function}:{line} - {message}"
+	
 	resolved_level = LEVEL_MAP.get(level.upper(), "INFO")
 	
 	# 移除默认处理器

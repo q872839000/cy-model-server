@@ -5,32 +5,12 @@
 
 import asyncio
 import threading
-from typing import Dict, Any, Optional, List, Union, Iterator, AsyncIterator
+from typing import Dict, Any, Optional, List, Union, Iterator, AsyncIterator, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
-from dataclasses import dataclass
-from enum import Enum
-
 from core.registry import REGISTRY
 from core.exceptions import ModelNotFoundError, InferenceError
 from services.container import CONTAINER
-
-
-class TaskType(Enum):
-    """任务类型枚举"""
-    LLM_GENERATE = "llm_generate"
-    EMBEDDING = "embedding"
-    RERANK = "rerank"
-
-
-@dataclass
-class InferenceTask:
-    """推理任务数据结构"""
-    task_id: str
-    task_type: TaskType
-    model_name: str
-    inputs: Dict[str, Any]
-    future: asyncio.Future
 
 
 class ModelWorker:
@@ -81,7 +61,7 @@ class ModelWorker:
             raise ModelNotFoundError(model_name)
         
         # 在线程池中执行同步的generate调用
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             # run_in_executor 不支持关键字参数，这里用 partial 包装
             from functools import partial
@@ -92,7 +72,46 @@ class ModelWorker:
             logger.error(f"文本生成失败: {e}")
             raise InferenceError(model_name, str(e))
 
-    async def generate_chat(
+    def generate_chat(
+        self,
+        model_name: str,
+        messages: List[Dict[str, Any]],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        stream: bool = False,
+        **kwargs
+    ) -> Union[Coroutine[Any, Any, str], AsyncIterator[str]]:
+        """
+        对话生成（统一接口，符合 OpenAI 范式）
+        
+        Args:
+            model_name: 模型名称
+            messages: 消息列表
+            stream: 是否流式输出
+            **kwargs: 其他生成参数
+        
+        Returns:
+            stream=False: 返回协程，await 后得到完整文本
+            stream=True: 返回异步迭代器，可直接 async for 迭代
+            
+        Usage:
+            # 非流式
+            text = await worker.generate_chat(model, messages, stream=False)
+            
+            # 流式
+            async for chunk in worker.generate_chat(model, messages, stream=True):
+                print(chunk)
+        """
+        if stream:
+            return self._generate_chat_stream(
+                model_name, messages, max_tokens, temperature, top_p, **kwargs
+            )
+        return self._generate_chat(
+            model_name, messages, max_tokens, temperature, top_p, **kwargs
+        )
+    
+    async def _generate_chat(
         self,
         model_name: str,
         messages: List[Dict[str, Any]],
@@ -101,20 +120,21 @@ class ModelWorker:
         top_p: float = 0.95,
         **kwargs
     ) -> str:
-        """基于策略的对话生成：按模型选择对应策略（qwen/glm/deepseek/generic）。"""
+        """内部非流式对话生成实现"""
         engine = REGISTRY.get_llm(model_name)
         if not engine:
             raise ModelNotFoundError(model_name)
         strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
         strategy = CONTAINER._strategies.get(strategy_key, CONTAINER._strategies["generic"])  # noqa: SLF001
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             from functools import partial
             bound = partial(
                 strategy.generate,
                 engine,
                 messages,
+                stream=False,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -126,7 +146,7 @@ class ModelWorker:
             logger.error(f"对话生成失败: {e}")
             raise InferenceError(model_name, str(e))
     
-    async def generate_chat_stream(
+    async def _generate_chat_stream(
         self,
         model_name: str,
         messages: List[Dict[str, Any]],
@@ -135,7 +155,7 @@ class ModelWorker:
         top_p: float = 0.95,
         **kwargs
     ) -> AsyncIterator[str]:
-        """流式对话生成：逐token返回生成结果"""
+        """内部流式对话生成实现"""
         engine = REGISTRY.get_llm(model_name)
         if not engine:
             raise ModelNotFoundError(model_name)
@@ -143,43 +163,33 @@ class ModelWorker:
         strategy = CONTAINER._strategies.get(strategy_key, CONTAINER._strategies["generic"])  # noqa: SLF001
 
         try:
-            # 在线程池中执行流式生成
-            loop = asyncio.get_event_loop()
-            
-            # 创建一个队列用于线程间通信
+            loop = asyncio.get_running_loop()
             queue: asyncio.Queue = asyncio.Queue()
             
             def _stream_worker():
-                """在独立线程中运行流式生成"""
                 try:
-                    for chunk in strategy.generate_stream(
+                    for chunk in strategy.generate(
                         engine,
                         messages,
+                        stream=True,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         top_p=top_p,
                         **kwargs,
                     ):
-                        # 使用线程安全的方式将结果放入队列
                         asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
                 except Exception as e:
-                    # 将异常也放入队列
                     asyncio.run_coroutine_threadsafe(queue.put(e), loop)
                 finally:
-                    # 发送结束标记
                     asyncio.run_coroutine_threadsafe(queue.put(None), loop)
             
-            # 在线程池中启动worker
             self.executor.submit(_stream_worker)
             
-            # 从队列中yield结果
             while True:
                 chunk = await queue.get()
                 if chunk is None:
-                    # 结束标记
                     break
                 if isinstance(chunk, Exception):
-                    # 传播异常
                     raise InferenceError(model_name, str(chunk))
                 yield chunk
                 
@@ -209,7 +219,7 @@ class ModelWorker:
             raise ModelNotFoundError(model_name)
         
         # 在线程池中执行同步的embed调用
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(
                 self.executor,
@@ -245,7 +255,7 @@ class ModelWorker:
             raise ModelNotFoundError(model_name)
         
         # 在线程池中执行同步的rerank调用
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(
                 self.executor,

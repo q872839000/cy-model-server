@@ -16,7 +16,9 @@ keepalive = 2
 # 重启
 max_requests = 1000
 max_requests_jitter = 50
-preload_app = True
+# 注意：对于GPU模型服务，preload_app应设为False
+# 避免在fork前加载模型导致CUDA context共享问题
+preload_app = False
 
 # 日志
 accesslog = "-"

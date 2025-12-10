@@ -20,6 +20,7 @@ class ModelWorker:
     - 线程池执行同步模型调用
     - 任务队列管理
     """
+
     
     def __init__(self, max_workers: int = 4):
         self.max_workers = max_workers

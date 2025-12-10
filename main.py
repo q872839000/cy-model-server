@@ -16,6 +16,31 @@ from core.exceptions import ModelServerException
 from observability.logging import setup_logging
 
 
+def _print_startup_banner(settings: AppSettings) -> None:
+	"""打印启动完成横幅"""
+	host = settings.host
+	port = settings.port
+	llm = REGISTRY.llm_count()
+	emb = REGISTRY.embedding_count()
+	rerank = REGISTRY.reranker_count()
+	
+	print("\n" + "=" * 60)
+	print("  ____ __   __  __  __  ___  ___  ___ _    ")
+	print(" / ___|\\ \\ / / |  \\/  |/ _ \\|   \\| __| |   ")
+	print("| |     \\ V /  | |\\/| | | | | |) | _|| |__ ")
+	print("| |___   | |   | |  | | |_| |   /| __|____|")
+	print(" \\____|  |_|   |_|  |_|\\___/|___/|___|_____|")
+	print("=" * 60)
+	print(f"  [OK] Server Ready!")
+	print(f"  API:     http://{host}:{port}")
+	print(f"  Docs:    http://{host}:{port}/docs")
+	print(f"  Metrics: http://{host}:{port}/metrics")
+	print(f"  Health:  http://{host}:{port}/healthz")
+	print("-" * 60)
+	print(f"  Models: LLM={llm} Embedding={emb} Reranker={rerank}")
+	print("=" * 60 + "\n")
+
+
 class ORJSONResponse(JSONResponse):
 	"""
 	自定义 ORJSON 响应类：
@@ -43,6 +68,9 @@ async def lifespan(app: FastAPI):
 				REGISTRY.llm_count(), REGISTRY.embedding_count(), REGISTRY.reranker_count())
 	except Exception as e:
 		logger.error("加载模型配置失败: {}", e)
+	
+	# 启动完成标识
+	_print_startup_banner(settings)
 	
 	yield  # 应用运行中
 	
@@ -202,5 +230,6 @@ if __name__ == "__main__":
 	生产环境请使用: uvicorn main:app --host 0.0.0.0 --port 8000
 	"""
 	settings = load_settings()
-	from uvicorn import run
-	run("main:app", host=settings.host, port=settings.port)
+	import uvicorn
+	# 直接传递 app 对象而非字符串，兼容 Nuitka 编译
+	uvicorn.run(app, host=settings.host, port=settings.port)

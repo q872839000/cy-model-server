@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from api.openai_router import router as openai_router
+from api.rag_router import router as rag_router
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,8 +58,8 @@ class ORJSONResponse(JSONResponse):
 async def lifespan(app: FastAPI):
 	"""
 	FastAPI 生命周期管理：
-	- startup: 加载模型注册表（只在工作进程中执行一次）
-	- shutdown: 清理资源
+	- startup: 加载模型注册表、连接 Milvus
+	- shutdown: 清理资源、断开连接
 	"""
 	# Startup: 加载模型
 	settings = load_settings()
@@ -69,6 +70,14 @@ async def lifespan(app: FastAPI):
 	except Exception as e:
 		logger.error("加载模型配置失败: {}", e)
 	
+	# Startup: 初始化 Milvus 连接
+	try:
+		from storage.milvus import init_milvus, shutdown_milvus
+		init_milvus()
+	except ImportError:
+		logger.info("Milvus 模块不可用，跳过初始化")
+		shutdown_milvus = None
+	
 	# 启动完成标识
 	_print_startup_banner(settings)
 	
@@ -76,6 +85,8 @@ async def lifespan(app: FastAPI):
 	
 	# Shutdown: 清理资源
 	logger.info("服务关闭，清理资源...")
+	if shutdown_milvus:
+		shutdown_milvus()
 	REGISTRY.clear()
 
 
@@ -221,6 +232,7 @@ app = create_app()
 
 # 注册路由
 app.include_router(openai_router)
+app.include_router(rag_router)
 
 
 

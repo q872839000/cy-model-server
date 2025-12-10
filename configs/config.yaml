@@ -23,14 +23,14 @@ engine_defaults:
 # - chat_strategy: 对话模板策略（qwen|glm|deepseek|generic）
 # - engine/device/dtype: 可选，未指定时使用 engine_defaults
 # - gen_params: 生成参数默认值
-llms:
-  - name: Qwen2-0___5B-Instruct
-    path: E:\\Ai\\models\\Qwen\\Qwen2-0___5B-Instruct
-    chat_strategy: qwen
-    gen_params:
-      max_tokens: 512
-      temperature: 0.7
-      top_p: 0.95
+#llms:
+#  - name: Qwen2-0___5B-Instruct
+#    path: E:\\Ai\\models\\Qwen\\Qwen2-0___5B-Instruct
+#    chat_strategy: qwen
+#    gen_params:
+#      max_tokens: 512
+#      temperature: 0.7
+#      top_p: 0.95
 
 # Embedding 模型列表
 embeddings:
@@ -41,3 +41,37 @@ embeddings:
 rerankers:
   - name: bge-reranker-base
     path: E:\\Ai\\models\\BAAI\\bge-reranker-base
+
+# ==================== RAG / 知识库配置 ====================
+# Milvus 向量数据库连接配置
+milvus:
+  host: localhost
+  port: 19530
+  database: default
+  # user: ""          # 可选：用户名
+  # password: ""      # 可选：密码
+  # secure: false     # 可选：是否使用 TLS
+  timeout: 30.0
+
+# Collection 全局配置（Collection 由业务系统创建和管理）
+knowledge_base:
+  # Dense Vector 配置（需与 embedding 模型输出维度匹配）
+  dense_dim: 1024              # bge-large-zh 输出维度
+  dense_index_type: HNSW
+  dense_metric_type: COSINE
+  
+  # HNSW 索引参数
+  hnsw_m: 16
+  hnsw_ef_construction: 256
+  
+  # BM25 参数
+  bm25_k1: 1.2
+  bm25_b: 0.75
+  
+  # 检索配置
+  default_top_k: 10
+  use_rerank: true             # 是否默认启用重排序
+  
+  # 使用的模型（引用上面定义的模型名称）
+  embedding_model: bge-large-zh
+  reranker_model: bge-reranker-base

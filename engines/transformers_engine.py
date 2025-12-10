@@ -176,6 +176,9 @@ class TransformersRerankerEngine(RerankerEngine):
     def rerank(self, query: str, documents, top_k: Optional[int] = None) -> List[float]:
         self._ensure_loaded()
         pairs = [(query, d) for d in documents]
-        scores = self._model.predict(pairs).tolist()
+        # CrossEncoder.predict 返回原始 logits，需要 sigmoid 转换为 0-1 概率分数
+        raw_scores = self._model.predict(pairs)
+        # 应用 sigmoid 归一化
+        scores = torch.sigmoid(torch.tensor(raw_scores)).tolist()
         # 若需要 top_k，可以在调用端裁剪
         return scores

@@ -183,12 +183,15 @@ class KBChatService:
                 search_query[:30], len(search_hits), search_took_ms
             )
         
+        # 2c. 过滤低相关性结果（传给 LLM 前）
+        filtered_hits = self._filter_irrelevant_hits(search_hits)
+        
         # 3. 组装 Prompt
         model_family = PromptBuilder.detect_model_family(model)
         llm_messages = self._prompt_builder.build(
             model_family=model_family,
             user_query=current_query,
-            search_hits=search_hits,
+            search_hits=filtered_hits,  # 使用过滤后的结果
             history=history,
         )
         
@@ -313,12 +316,15 @@ class KBChatService:
                     }
                 }
             
+            # 2c. 过滤低相关性结果（传给 LLM 前）
+            filtered_hits = self._filter_irrelevant_hits(search_hits)
+            
             # 3. 组装 Prompt
             model_family = PromptBuilder.detect_model_family(model)
             llm_messages = self._prompt_builder.build(
                 model_family=model_family,
                 user_query=current_query,
-                search_hits=search_hits,
+                search_hits=filtered_hits,  # 使用过滤后的结果
                 history=history,
             )
             
@@ -484,6 +490,60 @@ class KBChatService:
             })
         
         return hits
+    
+    def _filter_irrelevant_hits(
+        self,
+        search_hits: List[Dict],
+        min_score_ratio: float = 0.85,
+        max_hits_for_llm: int = 3,
+    ) -> List[Dict]:
+        """
+        过滤掉可能不相关的检索结果
+        
+        策略：
+        1. 保留分数 >= 最高分 * min_score_ratio 的结果
+        2. 如果最高分 < 0.6，认为所有结果都不太相关，只保留最高分那一条
+        3. 最多保留 max_hits_for_llm 条结果
+        
+        Args:
+            search_hits: 检索结果列表
+            min_score_ratio: 相对于最高分的最低比例阈值（默认 0.85）
+            max_hits_for_llm: 传给 LLM 的最大结果数（默认 3）
+            
+        Returns:
+            List[Dict]: 过滤后的检索结果
+        """
+        if not search_hits:
+            return search_hits
+        
+        # 获取最高分
+        max_score = max(hit.get("score", 0) for hit in search_hits)
+        
+        # 如果最高分较低，只保留第一条（最相关的）
+        if max_score < 0.6:
+            logger.info("[KBChat] 最高分({:.3f})较低，仅保留 top-1 结果", max_score)
+            return search_hits[:1]
+        
+        # 计算分数阈值（更严格：最高分的 85%）
+        score_threshold = max_score * min_score_ratio
+        
+        # 过滤低分结果
+        filtered = [
+            hit for hit in search_hits
+            if hit.get("score", 0) >= score_threshold
+        ]
+        
+        # 限制最大数量
+        if len(filtered) > max_hits_for_llm:
+            filtered = filtered[:max_hits_for_llm]
+        
+        if len(filtered) < len(search_hits):
+            logger.info(
+                "[KBChat] 过滤低相关性结果: {} -> {} (阈值: {:.3f}, 最高分: {:.3f})",
+                len(search_hits), len(filtered), score_threshold, max_score
+            )
+        
+        return filtered
     
     def _build_sources(self, search_hits: List[Dict]) -> List[SourceReference]:
         """

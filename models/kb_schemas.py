@@ -246,3 +246,98 @@ class SearchResponse(BaseModel):
 
 # 支持 ChapterNode 的自引用
 ChapterNode.model_rebuild()
+
+
+# ==================== 知识库对话 API 模型 ====================
+
+class KBChatMessage(BaseModel):
+    """知识库对话消息"""
+    role: str = Field(..., description="角色: user/assistant/system/observation")
+    content: str = Field(..., description="消息内容")
+
+
+class KBChatRequest(BaseModel):
+    """
+    知识库对话请求
+    
+    兼容 OpenAI Chat Completions 格式，增加知识库特有参数。
+    """
+    # 必填
+    model: str = Field(..., description="LLM模型名称")
+    collection_name: str = Field(..., description="知识库名称(Milvus Collection)")
+    messages: List[KBChatMessage] = Field(..., description="对话消息列表")
+    
+    # 检索参数
+    search_enabled: bool = Field(default=True, description="是否启用检索")
+    search_mode: str = Field(default="hybrid", description="检索模式: dense/sparse/hybrid")
+    search_top_k: int = Field(default=5, ge=1, le=20, description="检索数量")
+    rerank: bool = Field(default=True, description="是否重排序")
+    score_threshold: Optional[float] = Field(default=0.3, ge=0, le=1, description="分数阈值")
+    
+    # 改写参数
+    query_rewrite: str = Field(default="auto", description="Query改写模式: auto/always/never")
+    
+    # 生成参数
+    max_tokens: int = Field(default=1024, ge=1, le=8192, description="最大生成token数")
+    temperature: float = Field(default=0.7, ge=0, le=2, description="生成温度")
+    top_p: float = Field(default=0.95, ge=0, le=1, description="Top-p采样")
+    stream: bool = Field(default=False, description="是否流式输出")
+    
+    # 其他
+    session_id: Optional[str] = Field(default=None, description="会话ID(用于日志追踪)")
+    return_sources: bool = Field(default=True, description="是否返回引用来源")
+
+
+class KBSourceReference(BaseModel):
+    """知识库引用来源"""
+    index: int = Field(..., description="引用序号")
+    doc_name: str = Field(..., description="文档名称")
+    chapter: str = Field(default="", description="章节标题")
+    content_preview: str = Field(..., description="内容预览")
+    score: float = Field(..., description="相关性分数")
+
+
+class KBChatInfo(BaseModel):
+    """知识库对话附加信息"""
+    search_performed: bool = Field(..., description="是否执行了检索")
+    search_query: Optional[str] = Field(default=None, description="实际检索的query")
+    query_rewritten: bool = Field(default=False, description="是否进行了改写")
+    original_query: Optional[str] = Field(default=None, description="原始问题")
+    intent: str = Field(..., description="识别的意图")
+    sources: List[KBSourceReference] = Field(default_factory=list, description="引用来源")
+    search_took_ms: Optional[float] = Field(default=None, description="检索耗时(毫秒)")
+
+
+class KBChatMessageResponse(BaseModel):
+    """对话消息响应"""
+    role: str = Field(default="assistant", description="角色")
+    content: str = Field(..., description="回复内容")
+
+
+class KBChatChoice(BaseModel):
+    """对话选项"""
+    index: int = Field(default=0, description="选项索引")
+    message: KBChatMessageResponse = Field(..., description="消息")
+    finish_reason: str = Field(default="stop", description="结束原因")
+
+
+class KBChatUsage(BaseModel):
+    """Token使用量"""
+    prompt_tokens: int = Field(default=0, description="提示token数")
+    completion_tokens: int = Field(default=0, description="生成token数")
+    total_tokens: int = Field(default=0, description="总token数")
+
+
+class KBChatResponse(BaseModel):
+    """
+    知识库对话响应
+    
+    兼容 OpenAI Chat Completions 格式，增加 kb_info 字段。
+    """
+    id: str = Field(..., description="响应ID")
+    object: str = Field(default="kb.chat.completion", description="对象类型")
+    created: int = Field(..., description="创建时间戳")
+    model: str = Field(..., description="使用的模型")
+    choices: List[KBChatChoice] = Field(..., description="回复选项列表")
+    kb_info: KBChatInfo = Field(..., description="知识库相关信息")
+    usage: KBChatUsage = Field(default_factory=KBChatUsage, description="Token使用量")

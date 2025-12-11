@@ -1,21 +1,23 @@
-from typing import List, Dict, Union, Iterator
+from typing import List, Dict
 from strategies.base import LLMStrategy
 
 
 class GLMChatStrategy(LLMStrategy):
-	"""GLM 系列聊天策略。注意GLM使用特殊模板，这里以简化模板示例。"""
+	"""GLM 系列聊天策略，支持 observation 角色。"""
 
 	def apply_chat_template(self, messages: List[Dict]) -> str:
-		# 简化示例：GLM 常见格式包含 <|system|>, <|user|>, <|assistant|>
+		"""将消息列表转换为 GLM 模型输入的 prompt"""
 		parts = []
 		for m in messages:
 			role = m.get("role")
 			content = m.get("content", "")
 			if role == "system":
-				parts.append(f"<|system|>{content}")
+				parts.append(f"<|system|>\n{content}")
 			elif role == "user":
-				parts.append(f"<|user|>{content}")
+				parts.append(f"<|user|>\n{content}")
 			elif role == "assistant":
-				parts.append(f"<|assistant|>{content}")
+				parts.append(f"<|assistant|>\n{content}")
+			elif role == "observation":
+				parts.append(f"<|observation|>\n{content}")
 		parts.append("<|assistant|>")
 		return "\n".join(parts)

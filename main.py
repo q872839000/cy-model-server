@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from api.openai_router import router as openai_router
 from api.rag_router import router as rag_router
+from api.kb_chat_router import router as kb_chat_router
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -233,6 +234,7 @@ app = create_app()
 # 注册路由
 app.include_router(openai_router)
 app.include_router(rag_router)
+app.include_router(kb_chat_router)
 
 
 

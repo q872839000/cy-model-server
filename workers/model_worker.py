@@ -126,7 +126,11 @@ class ModelWorker:
         if not engine:
             raise ModelNotFoundError(model_name)
         strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
-        strategy = CONTAINER._strategies.get(strategy_key, CONTAINER._strategies["generic"])  # noqa: SLF001
+        strategy = CONTAINER.get_strategy(strategy_key)
+        
+        # 合并模型特性参数到 kwargs
+        model_features = REGISTRY.get_llm_features(model_name)
+        merged_kwargs = {**model_features, **kwargs}
 
         loop = asyncio.get_running_loop()
         try:
@@ -139,7 +143,7 @@ class ModelWorker:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                **kwargs,
+                **merged_kwargs,
             )
             result = await loop.run_in_executor(self.executor, bound)
             return result
@@ -161,7 +165,11 @@ class ModelWorker:
         if not engine:
             raise ModelNotFoundError(model_name)
         strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
-        strategy = CONTAINER._strategies.get(strategy_key, CONTAINER._strategies["generic"])  # noqa: SLF001
+        strategy = CONTAINER.get_strategy(strategy_key)
+        
+        # 合并模型特性参数到 kwargs
+        model_features = REGISTRY.get_llm_features(model_name)
+        merged_kwargs = {**model_features, **kwargs}
 
         try:
             loop = asyncio.get_running_loop()
@@ -176,7 +184,7 @@ class ModelWorker:
                         max_tokens=max_tokens,
                         temperature=temperature,
                         top_p=top_p,
-                        **kwargs,
+                        **merged_kwargs,
                     ):
                         asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
                 except Exception as e:

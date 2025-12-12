@@ -18,6 +18,7 @@ class LLMConfig:
 	dtype: Optional[str] = None
 	device: Optional[str] = None
 	gen_params: Optional[dict] = None
+	model_features: Optional[dict] = None  # 模型特性参数，如 enable_thinking
 
 
 @dataclass
@@ -49,6 +50,8 @@ class ModelRegistry:
 		self._default_reranker: Optional[str] = None
 		# LLM对话策略
 		self._llm_strategies: Dict[str, str] = {}
+		# LLM模型特性参数
+		self._llm_features: Dict[str, dict] = {}
 
 	def get_llm(self, name: Optional[str]) -> Optional[LLMEngine]:
 		"""获取指定名称的LLM引擎实例。"""
@@ -61,6 +64,12 @@ class ModelRegistry:
 		if name is None:
 			name = self._default_llm
 		return self._llm_strategies.get(name)
+
+	def get_llm_features(self, name: Optional[str]) -> dict:
+		"""获取指定名称的LLM模型特性参数。"""
+		if name is None:
+			name = self._default_llm
+		return self._llm_features.get(name, {})
 
 	def get_embedding(self, name: Optional[str]) -> Optional[EmbeddingEngine]:
 		"""获取指定名称的Embedding引擎实例。"""
@@ -106,6 +115,7 @@ class ModelRegistry:
 		self._embeddings.clear()
 		self._rerankers.clear()
 		self._llm_strategies.clear()
+		self._llm_features.clear()
 		self._default_llm = None
 		self._default_embedding = None
 		self._default_reranker = None
@@ -133,6 +143,11 @@ class ModelRegistry:
 		# LLMs
 		llms_cfg = cfg.get("llms", [])
 		for i, item in enumerate(llms_cfg):
+				# 提取模型特性参数
+			model_features = {}
+			if "enable_thinking" in item:
+				model_features["enable_thinking"] = item["enable_thinking"]
+			
 			llm_conf = LLMConfig(
 				name=item["name"],
 				engine=item.get("engine") or engine_defaults.get("llm_engine", "transformers"),
@@ -141,6 +156,7 @@ class ModelRegistry:
 				dtype=item.get("dtype") or default_dtype,
 				device=item.get("device") or default_device,
 				gen_params=item.get("gen_params", {}),
+				model_features=model_features if model_features else None,
 			)
 			# 验证模型路径
 			if not self._validate_model_path(llm_conf.path, llm_conf.name):
@@ -150,12 +166,14 @@ class ModelRegistry:
 			try:
 				if hasattr(engine, '_ensure_loaded'):
 					engine._ensure_loaded()
-				# 只有加载成功才添加到注册表
+					# 只有加载成功才添加到注册表
 				self._llms[llm_conf.name] = engine
 				self._llm_strategies[llm_conf.name] = llm_conf.chat_strategy
+				if llm_conf.model_features:
+					self._llm_features[llm_conf.name] = llm_conf.model_features
 				if self._default_llm is None:
 					self._default_llm = llm_conf.name
-				logger.info("LLM loaded: {} via {}", llm_conf.name, llm_conf.engine)
+				logger.info("LLM loaded: {} via {} (strategy={})", llm_conf.name, llm_conf.engine, llm_conf.chat_strategy)
 			except Exception as e:
 				logger.error('加载 LLM 失败: {} -> {}', llm_conf.name, e)
 				# 加载失败时不添加到注册表，不设置为默认模型

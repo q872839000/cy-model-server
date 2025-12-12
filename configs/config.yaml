@@ -15,22 +15,27 @@ engine_defaults:
   embedding_engine: transformers
   reranker_engine: transformers
   device: cuda                       # 默认设备
-  dtype: float32                     # 默认精度（可选: float16 | bfloat16 | null表示全精度）
+  dtype: float16                     # 默认精度（可选: float16 | bfloat16 | null表示全精度）
 
 # LLM 模型列表
 # - name: 必须唯一，用于 API 调用时指定模型
 # - path: 本地模型路径
-# - chat_strategy: 对话模板策略（qwen|glm|deepseek|generic）
+# - chat_strategy: 对话模板策略，支持细粒度配置：
+#     通用: generic
+#     Qwen系列: qwen (基础) | qwen2 | qwen3 (支持深度思考)
+#     GLM系列: glm (基础) | glm4 | glm4-0414 | glm4-z1 (支持深度思考)
+#     Deepseek系列: deepseek (基础) | deepseek-r1 (支持深度思考)
 # - engine/device/dtype: 可选，未指定时使用 engine_defaults
 # - gen_params: 生成参数默认值
-#llms:
-#  - name: Qwen2-0___5B-Instruct
-#    path: E:\\Ai\\models\\Qwen\\Qwen2-0___5B-Instruct
-#    chat_strategy: qwen
-#    gen_params:
-#      max_tokens: 512
-#      temperature: 0.7
-#      top_p: 0.95
+llms:
+  - name: Qwen3-1___7B
+    path: E:\\Ai\\models\\Qwen\\Qwen3-1___7B
+    chat_strategy: qwen3           # 使用 Qwen3 策略，支持 enable_thinking 参数
+#    enable_thinking: false
+    gen_params:
+      max_tokens: 512
+      temperature: 0.7
+      top_p: 0.95
 
 # Embedding 模型列表
 embeddings:

@@ -2,8 +2,8 @@ from typing import List, Dict
 from strategies.base import LLMStrategy
 
 
-class GLMChatStrategy(LLMStrategy):
-	"""GLM 系列聊天策略，支持 observation 角色。"""
+class GLMBaseStrategy(LLMStrategy):
+	"""GLM 系列基础策略，支持 observation 角色。"""
 
 	def apply_chat_template(self, messages: List[Dict]) -> str:
 		"""将消息列表转换为 GLM 模型输入的 prompt"""
@@ -20,4 +20,4 @@ class GLMChatStrategy(LLMStrategy):
 			elif role == "observation":
 				parts.append(f"<|observation|>\n{content}")
 		parts.append("<|assistant|>")
-		return "\n".join(parts)
+		return "[gMASK]<sop>" + "\n".join(parts)

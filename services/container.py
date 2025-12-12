@@ -12,10 +12,8 @@ from typing import Dict, Optional, List, Any
 from loguru import logger
 
 from core.registry import REGISTRY
-from strategies.base import GenericChatStrategy, LLMStrategy
-from strategies.glm import GLMChatStrategy
-from strategies.qwen import QwenChatStrategy
-from strategies.deepseek import DeepseekChatStrategy
+from strategies.base import LLMStrategy
+from strategies.factory import StrategyFactory
 
 
 class ServiceContainer:
@@ -23,21 +21,27 @@ class ServiceContainer:
     服务容器：负责提供面向业务的引用（引擎与策略）。
     
     职责：
-    1. 管理 LLM 策略实例
+    1. 通过策略工厂获取 LLM 策略实例
     2. 提供 Embedding/Reranker 引擎获取
     3. 提供 RAG 服务（延迟初始化）
     """
 
     def __init__(self) -> None:
         """初始化服务容器"""
-        self._strategies: Dict[str, LLMStrategy] = {
-            "generic": GenericChatStrategy(),
-            "glm": GLMChatStrategy(),
-            "qwen": QwenChatStrategy(),
-            "deepseek": DeepseekChatStrategy(),
-        }
         self._rag_service: Optional["RAGService"] = None
         self._rag_initialized: bool = False
+
+    def get_strategy(self, strategy_key: Optional[str]) -> LLMStrategy:
+        """
+        获取 LLM 策略实例。
+        
+        Args:
+            strategy_key: 策略标识符
+            
+        Returns:
+            LLMStrategy: 策略实例
+        """
+        return StrategyFactory.get(strategy_key)
 
     def get_llm_and_strategy(self, model_name: str | None):
         """
@@ -51,7 +55,7 @@ class ServiceContainer:
         """
         engine = REGISTRY.get_llm(model_name)
         strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
-        strategy = self._strategies.get(strategy_key, self._strategies["generic"])
+        strategy = StrategyFactory.get(strategy_key)
         return engine, strategy
 
     def get_embedding(self, model_name: str | None):

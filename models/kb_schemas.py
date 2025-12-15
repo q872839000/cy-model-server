@@ -282,6 +282,7 @@ class KBChatRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0, le=2, description="生成温度")
     top_p: float = Field(default=0.95, ge=0, le=1, description="Top-p采样")
     stream: bool = Field(default=False, description="是否流式输出")
+    enable_thinking: bool = Field(default=True, description="是否启用深度思考模式")
     
     # 其他
     session_id: Optional[str] = Field(default=None, description="会话ID(用于日志追踪)")

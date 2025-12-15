@@ -42,17 +42,19 @@ class ChatCompletionRequest(BaseModel):
     属性:
         model: 使用的LLM模型名称
         messages: 对话历史消息列表
-        max_tokens: 最大生成token数，默认256
+        max_tokens: 最大生成token数，默认2048
         temperature: 生成温度(0-2)，越高越随机，默认0.0
         top_p: 核采样参数(0-1)，默认1.0
         stream: 是否使用流式输出，默认False
+        enable_thinking: 是否启用深度思考模式，默认True
     """
     model: str
     messages: List[ChatMessage]
-    max_tokens: int = 256
+    max_tokens: int = 2048
     temperature: float = 0.0
     top_p: float = 1.0
     stream: bool = False
+    enable_thinking: bool = True
 
 
 class EmbeddingRequest(BaseModel):
@@ -95,6 +97,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
+                enable_thinking=req.enable_thinking,
             )
             return {
                 'id': f'chatcmpl-{uuid.uuid4().hex[:8]}',
@@ -149,6 +152,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     temperature=req.temperature,
                     top_p=req.top_p,
                     stream=True,
+                    enable_thinking=req.enable_thinking,
                 ):
                     yield f"data: {make_chunk({'content': text_chunk})}\n\n"
             except Exception:

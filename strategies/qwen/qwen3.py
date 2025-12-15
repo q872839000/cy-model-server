@@ -32,7 +32,8 @@ class Qwen3Strategy(QwenBaseStrategy):
         # Qwen3 深度思考模式控制
         # 根据官方文档：enable_thinking=False 时添加空思考标签让模型跳过思考
         if enable_thinking:
-            parts.append("<|im_start|>assistant")
+            # 显式添加 <think> 引导模型进入思考模式，同时避免模型输出多余的 <think>
+            parts.append("<|im_start|>assistant\n<think>")
         else:
             parts.append("<|im_start|>assistant\n<think>\n\n</think>\n")
         
@@ -55,4 +56,21 @@ class Qwen3Strategy(QwenBaseStrategy):
         """
         enable_thinking = kwargs.pop("enable_thinking", True)
         prompt = self.apply_chat_template(messages, enable_thinking=enable_thinking)
-        return engine.generate(prompt, stream=stream, **kwargs)
+        
+        # 因为我们在 prompt 中手动添加了 <think>，模型生成的可以通过 append 回去
+        # 但是为了给用户完整的体验（看到 <think> 标签），我们需要在输出开头补上
+        
+        if stream:
+            return self._generate_stream(engine, prompt, enable_thinking, **kwargs)
+        else:
+            output = engine.generate(prompt, stream=False, **kwargs)
+            if enable_thinking:
+                return "<think>" + output
+            return output
+
+    def _generate_stream(self, engine, prompt, enable_thinking, **kwargs):
+        if enable_thinking:
+            yield "<think>"
+        
+        for chunk in engine.generate(prompt, stream=True, **kwargs):
+            yield chunk

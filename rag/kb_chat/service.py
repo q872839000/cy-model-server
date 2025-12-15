@@ -112,6 +112,7 @@ class KBChatService:
         top_p: float = 0.95,
         session_id: Optional[str] = None,
         return_sources: bool = True,
+        enable_thinking: bool = True,
     ) -> KBChatResult:
         """
         执行知识库对话
@@ -202,6 +203,7 @@ class KBChatService:
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            enable_thinking=enable_thinking,
         )
         
         # 5. 构建结果
@@ -245,6 +247,7 @@ class KBChatService:
         top_p: float = 0.95,
         session_id: Optional[str] = None,
         return_sources: bool = True,
+        enable_thinking: bool = True,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         流式知识库对话
@@ -335,6 +338,7 @@ class KBChatService:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                enable_thinking=enable_thinking,
             ):
                 yield {"type": "content", "data": {"text": chunk}}
             

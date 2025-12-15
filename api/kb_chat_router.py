@@ -53,7 +53,7 @@ def _get_kb_chat_service() -> KBChatService:
         )
     
     # 创建 LLM 调用函数
-    async def llm_fn(model, messages, max_tokens, temperature, top_p=0.95, **kwargs):
+    async def llm_fn(model, messages, max_tokens, temperature, top_p=0.95, enable_thinking=True, **kwargs):
         """非流式 LLM 调用"""
         return await WORKER.generate_chat(
             model_name=model,
@@ -62,9 +62,10 @@ def _get_kb_chat_service() -> KBChatService:
             temperature=temperature,
             top_p=top_p,
             stream=False,
+            enable_thinking=enable_thinking,
         )
     
-    async def llm_stream_fn(model, messages, max_tokens, temperature, top_p=0.95, **kwargs):
+    async def llm_stream_fn(model, messages, max_tokens, temperature, top_p=0.95, enable_thinking=True, **kwargs):
         """流式 LLM 调用"""
         async for chunk in WORKER.generate_chat(
             model_name=model,
@@ -73,6 +74,7 @@ def _get_kb_chat_service() -> KBChatService:
             temperature=temperature,
             top_p=top_p,
             stream=True,
+            enable_thinking=enable_thinking,
         ):
             yield chunk
     
@@ -135,6 +137,7 @@ async def kb_chat_completions(request: KBChatRequest):
                 top_p=request.top_p,
                 session_id=request.session_id,
                 return_sources=request.return_sources,
+                enable_thinking=request.enable_thinking,
             )
             
             # 构建响应
@@ -226,6 +229,7 @@ async def _generate_stream(
             top_p=request.top_p,
             session_id=request.session_id,
             return_sources=request.return_sources,
+            enable_thinking=request.enable_thinking,
         ):
             event_type = event.get("type")
             event_data = event.get("data", {})

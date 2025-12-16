@@ -18,9 +18,78 @@ class LLMEngine(ABC):
 			stream=False: 返回完整文本字符串
 			stream=True: 返回文本片段的迭代器
 		"""
+		stop = kwargs.pop("stop", None)
 		if stream:
-			return self._generate_stream(prompt, **kwargs)
-		return self._generate(prompt, **kwargs)
+			it = self._generate_stream(prompt, **kwargs)
+			if stop:
+				return self._apply_stop_stream(it, stop)
+			return it
+		text = self._generate(prompt, **kwargs)
+		if stop:
+			return self._apply_stop_text(text, stop)
+		return text
+
+	@staticmethod
+	def _normalize_stop(stop: Any) -> List[str]:
+		if stop is None:
+			return []
+		if isinstance(stop, str):
+			return [stop] if stop else []
+		try:
+			stops = [s for s in stop if isinstance(s, str) and s]
+		except TypeError:
+			return []
+		return stops
+
+	@classmethod
+	def _apply_stop_text(cls, text: str, stop: Any) -> str:
+		stops = cls._normalize_stop(stop)
+		if not stops:
+			return text
+		cut = None
+		for s in stops:
+			idx = text.find(s)
+			if idx != -1 and (cut is None or idx < cut):
+				cut = idx
+		return text if cut is None else text[:cut]
+
+	@classmethod
+	def _apply_stop_stream(cls, it: Iterator[str], stop: Any) -> Iterator[str]:
+		stops = cls._normalize_stop(stop)
+		if not stops:
+			yield from it
+			return
+		max_len = max(len(s) for s in stops)
+		buffer = ""
+		for chunk in it:
+			if not chunk:
+				continue
+			combined = buffer + chunk
+			cut = None
+			for s in stops:
+				idx = combined.find(s)
+				if idx != -1 and (cut is None or idx < cut):
+					cut = idx
+			if cut is None:
+				keep = max_len - 1
+				if keep <= 0:
+					yield combined
+					buffer = ""
+					continue
+				if len(combined) > keep:
+					emit_len = len(combined) - keep
+					yield combined[:emit_len]
+					buffer = combined[emit_len:]
+				else:
+					buffer = combined
+				continue
+			if cut > 0:
+				yield combined[:cut]
+			for _ in it:
+				pass
+			return
+		if buffer:
+			yield buffer
 	
 	@abstractmethod
 	def _generate(self, prompt: str, **kwargs) -> str:

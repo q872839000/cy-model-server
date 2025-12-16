@@ -1,4 +1,4 @@
-"""GLM4-0414 series model strategy (supports deep thinking)"""
+"""GLM4-0414 系列模型策略（支持深度思考）"""
 
 from typing import List, Dict, Iterator, Union
 from strategies.glm.base import GLMBaseStrategy
@@ -6,19 +6,55 @@ from strategies.glm.base import GLMBaseStrategy
 
 class GLM4_0414Strategy(GLMBaseStrategy):
     """
-    GLM4-0414 series strategy.
+    GLM4-0414 系列策略。
     
-    Supports deep thinking mode via do_sample parameter.
+    通过在 prompt 中注入 <think> 标签来引导模型输出思考过程。
     """
 
-    def generate(self, engine, messages: List[Dict], stream: bool = False, **kwargs) -> Union[str, Iterator[str]]:
-        """Generate response with thinking mode support."""
-        enable_thinking = kwargs.pop("enable_thinking", True)
+    def apply_chat_template(self, messages: List[Dict], enable_thinking: bool = True) -> str:
+        """
+        应用对话模板，可选启用深度思考模式。
+        """
+        prompt = super().apply_chat_template(messages)
         if enable_thinking:
-            kwargs.setdefault("do_sample", True)
-            kwargs.setdefault("temperature", 0.7)
-        else:
-            kwargs.setdefault("do_sample", False)
+            prompt = prompt.rstrip("\n") + "\n<think>"
+        return prompt
+
+    def generate(self, engine, messages: List[Dict], stream: bool = False, **kwargs) -> Union[str, Iterator[str]]:
+        """
+        生成回复（支持深度思考模式）。
         
-        prompt = self.apply_chat_template(messages)
-        return engine.generate(prompt, stream=stream, **kwargs)
+        Args:
+            engine: LLM 引擎实例
+            messages: 消息列表
+            stream: 是否流式输出
+            **kwargs: 生成参数，enable_thinking 默认为 True
+        """
+        enable_thinking = kwargs.pop("enable_thinking", True)
+        
+        prompt = self.apply_chat_template(messages, enable_thinking=enable_thinking)
+
+        stop_words = ["<|user|>", "<|assistant|>", "<|system|>", "<|observation|>"]
+        kwargs.setdefault("stop", stop_words)
+        
+        if stream:
+            return self._generate_stream(engine, prompt, enable_thinking, **kwargs)
+            
+        output = engine.generate(prompt, stream=stream, **kwargs)
+        if enable_thinking:
+            if output.lstrip().startswith("<think>"):
+                return output
+            return "<think>" + output
+        return output
+
+    def _generate_stream(self, engine, prompt, enable_thinking, **kwargs):
+        first = True
+        for chunk in engine.generate(prompt, stream=True, **kwargs):
+            if first:
+                first = False
+                if enable_thinking:
+                    if chunk.lstrip().startswith("<think>"):
+                        yield chunk
+                        continue
+                    yield "<think>"
+            yield chunk

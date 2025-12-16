@@ -12,10 +12,10 @@ class DeepseekBaseStrategy(LLMStrategy):
 	"""
 
 	def apply_chat_template(self, messages: List[Dict]) -> str:
-		# 简化模板：使用ROLE: content形式并加入特殊前缀
+		# 简化模板：使用 ROLE: content 形式并加入特殊前缀
 		parts = ["<deepseek>"]
 		for m in messages:
-			role = m.get("role")
+			role = m.get("role") or "user"
 			content = m.get("content", "")
 			parts.append(f"{role.upper()}: {content}")
 		parts.append("ASSISTANT:")

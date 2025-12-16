@@ -16,13 +16,13 @@ class DeepseekR1Strategy(DeepseekBaseStrategy):
 		"""
 		将消息列表转换为 Deepseek R1 模型输入的 prompt。
 		
-		Args:
+		参数:
 			messages: 消息列表
 			enable_thinking: 是否启用深度思考模式，默认 True
 		"""
 		parts = ["<deepseek>"]
 		for m in messages:
-			role = m.get("role")
+			role = m.get("role") or "user"
 			content = m.get("content", "")
 			parts.append(f"{role.upper()}: {content}")
 		

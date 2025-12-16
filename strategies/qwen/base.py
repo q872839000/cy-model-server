@@ -16,7 +16,7 @@ class QwenBaseStrategy(LLMStrategy):
         """将消息列表转换为 Qwen 模型输入的 prompt"""
         parts = []
         for m in messages:
-            role = m.get("role")
+            role = m.get("role") or "user"
             content = m.get("content", "")
             parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
         parts.append("<|im_start|>assistant\n")

@@ -9,7 +9,7 @@ class GLMBaseStrategy(LLMStrategy):
 		"""将消息列表转换为 GLM 模型输入的 prompt"""
 		parts = []
 		for m in messages:
-			role = m.get("role")
+			role = m.get("role") or "user"
 			content = m.get("content", "")
 			if role == "system":
 				parts.append(f"<|system|>\n{content}")
@@ -17,7 +17,9 @@ class GLMBaseStrategy(LLMStrategy):
 				parts.append(f"<|user|>\n{content}")
 			elif role == "assistant":
 				parts.append(f"<|assistant|>\n{content}")
-			elif role == "observation":
+			elif role in ("observation", "tool"):
 				parts.append(f"<|observation|>\n{content}")
-		parts.append("<|assistant|>")
+			else:
+				parts.append(f"<|user|>\n{content}")
+		parts.append("<|assistant|>\n")
 		return "[gMASK]<sop>" + "\n".join(parts)

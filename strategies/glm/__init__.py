@@ -1,4 +1,4 @@
-"""GLM series model strategy module"""
+"""GLM 系列模型策略模块"""
 
 from strategies.glm.base import GLMBaseStrategy
 from strategies.glm.glm4 import GLM4Strategy

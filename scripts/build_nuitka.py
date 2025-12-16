@@ -164,6 +164,20 @@ def check_compiler():
         return None
 
 
+def check_patchelf():
+    if not sys.platform.startswith("linux"):
+        return True
+
+    if shutil.which("patchelf"):
+        return True
+
+    print("警告: 未找到 patchelf，Linux 下 Nuitka standalone 可能无法正确修补 ELF 依赖。")
+    print("  Debian/Ubuntu: sudo apt install patchelf")
+    print("  CentOS/RHEL:   sudo yum install patchelf   (或 sudo dnf install patchelf)")
+    print("  Arch:          sudo pacman -S patchelf")
+    return True
+
+
 def build(onefile: bool = False):
     """执行 Nuitka 编译"""
     
@@ -177,6 +191,8 @@ def build(onefile: bool = False):
     
     if not check_compiler():
         return False
+
+    check_patchelf()
     
     # 清理旧构建
     if OUTPUT_DIR.exists():
@@ -206,6 +222,8 @@ def build(onefile: bool = False):
         "--include-package=services",
         "--include-package=strategies",
         "--include-package=workers",
+        "--include-package=rag",
+        "--include-package=storage",
         
         # 包含配置文件
         f"--include-data-dir={PROJECT_ROOT / 'configs'}=configs",
@@ -218,6 +236,9 @@ def build(onefile: bool = False):
         "--include-package=safetensors",
         "--include-package=sentence_transformers",
         "--include-package=sentencepiece",
+        "--include-package=pymilvus",
+        "--include-package=grpc",
+        "--include-package=google.protobuf",
         "--include-package=fastapi",
         "--include-package=uvicorn",
         "--include-package=pydantic",
@@ -238,6 +259,10 @@ def build(onefile: bool = False):
         "--include-package-data=transformers",
         "--include-package-data=tokenizers",
         "--include-package-data=sentencepiece",
+        "--include-package-data=torch",
+        "--include-package-data=pymilvus",
+        "--include-package-data=grpc",
+        "--include-package-data=google.protobuf",
         
         # 注意：numpy 和 torch 插件在 Nuitka 2.x 已弃用，无需显式启用
         

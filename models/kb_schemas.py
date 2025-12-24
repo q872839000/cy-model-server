@@ -57,6 +57,7 @@ class KBChunk(BaseModel):
         chapter_path: 章节层级路径，如 "第一章/1.2节/概述"
         chunk_idx: 切片在文档中的序号（0-based）
         content: 切片文本内容
+        title: 标题（doc_name + chapter 拼接，用于 BM25 检索）
         position: 切片在原文中的位置信息
         overlap: 与相邻切片的重叠信息
         metadata: 扩展元数据（如作者、标签等）
@@ -69,6 +70,7 @@ class KBChunk(BaseModel):
     chapter_path: str = Field(default="", description="章节层级路径，如 '第一章/1.2节/概述'")
     chunk_idx: int = Field(..., description="切片在文档中的序号（0-based）")
     content: str = Field(..., description="切片文本内容")
+    title: str = Field(default="", description="标题（doc_name + chapter 拼接，用于 BM25 检索）")
     position: ChunkPosition = Field(..., description="切片在原文中的位置信息")
     overlap: ChunkOverlapInfo = Field(default_factory=ChunkOverlapInfo, description="重叠信息")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="扩展元数据")
@@ -342,3 +344,55 @@ class KBChatResponse(BaseModel):
     choices: List[KBChatChoice] = Field(..., description="回复选项列表")
     kb_info: KBChatInfo = Field(..., description="知识库相关信息")
     usage: KBChatUsage = Field(default_factory=KBChatUsage, description="Token使用量")
+
+
+class KBChatDelta(BaseModel):
+    """
+    知识库对话流式输出的增量内容
+    
+    类似OpenAI ChatCompletionDelta，用于流式chunk中的delta字段
+    
+    属性:
+        role: 角色标识，通常只在第一个chunk中出现
+        content: 增量文本内容，每个chunk推送部分生成的文本
+    """
+    role: Optional[str] = None
+    content: Optional[str] = None
+
+
+class KBChatChunkChoice(BaseModel):
+    """
+    知识库对话流式输出中的单个选择项
+    
+    类似OpenAI ChatCompletionChunkChoice，包含增量内容和状态
+    
+    属性:
+        index: 选择项序号，通常为0
+        delta: 本次chunk的增量内容
+        finish_reason: 结束原因，仅在最后一个content chunk中出现
+    """
+    index: int = Field(default=0, description="选择项索引")
+    delta: KBChatDelta = Field(..., description="增量内容")
+    finish_reason: Optional[str] = Field(default=None, description="结束原因")
+
+
+class KBChatChunkResponse(BaseModel):
+    """
+    知识库对话流式响应的单个chunk
+    
+    类似OpenAI ChatCompletionChunkResponse，用于SSE流式输出
+    
+    属性:
+        id: 响应会话ID，同一次对话的所有chunk使用相同ID
+        object: 对象类型标识，固定为"kb.chat.completion.chunk"
+        created: 响应创建的Unix时间戳
+        model: 实际执行推理的模型名称
+        choices: 生成选择列表，通常只包含一个元素
+        kb_info: 知识库相关信息，仅在特定chunk中出现（如搜索完成时）
+    """
+    id: str = Field(..., description="响应ID")
+    object: str = Field(default="kb.chat.completion.chunk", description="对象类型")
+    created: int = Field(..., description="创建时间戳")
+    model: str = Field(..., description="使用的模型")
+    choices: List[KBChatChunkChoice] = Field(..., description="生成结果列表")
+    kb_info: Optional[KBChatInfo] = Field(default=None, description="知识库相关信息")

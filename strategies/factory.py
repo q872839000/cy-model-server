@@ -60,6 +60,11 @@ class StrategyFactory:
     # 策略实例缓存（单例模式）
     _instances: Dict[str, LLMStrategy] = {}
 
+    @staticmethod
+    def _normalize_key(key: str) -> str:
+        key = (key or "").strip().lower()
+        return key.replace("_", "-")
+
     @classmethod
     def register(cls, key: str, strategy_class: Type[LLMStrategy]) -> None:
         """
@@ -69,8 +74,9 @@ class StrategyFactory:
             key: 策略标识符（用于配置文件中的 chat_strategy 字段）
             strategy_class: 策略类
         """
-        cls._registry[key] = strategy_class
-        logger.debug("注册策略: {} -> {}", key, strategy_class.__name__)
+        normalized = cls._normalize_key(key)
+        cls._registry[normalized] = strategy_class
+        logger.debug("注册策略: {} -> {}", normalized, strategy_class.__name__)
 
     @classmethod
     def get(cls, key: Optional[str]) -> LLMStrategy:
@@ -83,8 +89,11 @@ class StrategyFactory:
         Returns:
             LLMStrategy: 策略实例
         """
+        raw_key = key
         if key is None:
             key = "generic"
+
+        key = cls._normalize_key(key)
         
         # 检查缓存
         if key in cls._instances:
@@ -92,15 +101,42 @@ class StrategyFactory:
         
         # 查找策略类
         strategy_class = cls._registry.get(key)
-        
+
+        resolved_key = key
         if strategy_class is None:
-            logger.warning("未找到策略 '{}', 回退到通用策略", key)
-            strategy_class = GenericChatStrategy
+            if "qwen3" in key:
+                resolved_key = "qwen3"
+            elif "qwen2" in key:
+                resolved_key = "qwen2"
+            elif "qwen" in key:
+                resolved_key = "qwen"
+            elif "glm" in key and "z1" in key:
+                resolved_key = "glm4-z1"
+            elif "glm" in key and "0414" in key:
+                resolved_key = "glm4-0414"
+            elif "glm4" in key:
+                resolved_key = "glm4"
+            elif "glm" in key:
+                resolved_key = "glm"
+            elif "deepseek" in key and "r1" in key:
+                resolved_key = "deepseek-r1"
+            elif "deepseek" in key:
+                resolved_key = "deepseek"
+            else:
+                resolved_key = "generic"
+
+            strategy_class = cls._registry.get(resolved_key)
+            if strategy_class is None:
+                resolved_key = "generic"
+                strategy_class = GenericChatStrategy
+
+            logger.warning("未找到策略 '{}' (normalized='{}'), 回退到 '{}'", raw_key, key, resolved_key)
         
         # 创建实例并缓存
         instance = strategy_class()
         cls._instances[key] = instance
-        logger.info("加载策略: {} -> {}", key, strategy_class.__name__)
+        cls._instances[resolved_key] = instance
+        logger.info("加载策略: {} -> {}", resolved_key, strategy_class.__name__)
         
         return instance
 

@@ -14,7 +14,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from loguru import logger
 
-from models.kb_schemas import (
+from models import (
     KBChunk,
     KBSearchRequest,
     KBSearchResponse,
@@ -43,16 +43,18 @@ class RetrieverConfig:
     Attributes:
         default_top_k: 默认返回结果数量
         dense_weight: 混合检索中稠密向量的权重
-        sparse_weight: 混合检索中稀疏向量的权重
+        content_sparse_weight: 混合检索中内容稀疏向量的权重
+        title_sparse_weight: 混合检索中标题稀疏向量的权重
         rrf_k: RRF 融合算法的 k 参数
         use_rrf: 是否使用 RRF 融合（否则使用加权融合）
         ef_search: HNSW 搜索时的 ef 参数
     """
     default_top_k: int = 10
-    dense_weight: float = 0.7
-    sparse_weight: float = 0.3
+    dense_weight: float = 1.0
+    content_sparse_weight: float = 0.8
+    title_sparse_weight: float = 0.5
     rrf_k: int = 60
-    use_rrf: bool = True
+    use_rrf: bool = False
     ef_search: int = 64
 
 
@@ -257,18 +259,28 @@ class HybridRetriever:
             expr=filter_expr if filter_expr else None,
         )
         
-        # 选择融合策略
+        # 构建 Title Sparse 搜索请求
+        title_sparse_req = AnnSearchRequest(
+            data=[request.query],
+            anns_field="title_sparse_vector",
+            param=sparse_search_params,
+            limit=request.top_k,
+            expr=filter_expr if filter_expr else None,
+        )
+        
+        # 选择融合策略（三路加权融合）
         if self._config.use_rrf:
             ranker = RRFRanker(k=self._config.rrf_k)
         else:
             ranker = WeightedRanker(
                 self._config.dense_weight,
-                self._config.sparse_weight
+                self._config.content_sparse_weight,
+                self._config.title_sparse_weight
             )
         
-        # 执行混合搜索
+        # 执行三路混合搜索
         results = collection.hybrid_search(
-            reqs=[dense_req, sparse_req],
+            reqs=[dense_req, sparse_req, title_sparse_req],
             rerank=ranker,
             limit=request.top_k,
             output_fields=self._get_output_fields(),
@@ -305,7 +317,7 @@ class HybridRetriever:
         """获取需要返回的字段列表"""
         return [
             "id", "doc_id", "doc_name", "chapter", "chapter_path",
-            "chunk_idx", "content", "start_pos", "end_pos",
+            "chunk_idx", "content", "title", "start_pos", "end_pos",
             "overlap_prev", "overlap_next", "metadata", "created_at"
         ]
     
@@ -338,6 +350,7 @@ class HybridRetriever:
                 chapter_path=entity.get("chapter_path", ""),
                 chunk_idx=entity.get("chunk_idx"),
                 content=entity.get("content"),
+                title=entity.get("title", ""),
                 position=ChunkPosition(
                     start_pos=entity.get("start_pos", 0),
                     end_pos=entity.get("end_pos", 0)
@@ -413,6 +426,7 @@ class HybridRetriever:
                 chapter_path=data.get("chapter_path", ""),
                 chunk_idx=data.get("chunk_idx"),
                 content=data.get("content"),
+                title=data.get("title", ""),
                 position=ChunkPosition(
                     start_pos=data.get("start_pos", 0),
                     end_pos=data.get("end_pos", 0)

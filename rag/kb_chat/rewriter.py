@@ -3,28 +3,37 @@ Query 改写模块
 
 本模块负责将依赖上下文的问题改写为独立的检索 Query。
 
-典型场景：
-- 指代消解："它有什么优点？" → "RAG有什么优点？"
-- 省略补全："和传统数据库有什么区别？" → "向量数据库和传统数据库有什么区别？"
-- 追问细节："第二点能详细说说吗？" → "[具体内容] 详细解释"
 """
 
 import asyncio
 from typing import List, Dict, Optional, Callable, Awaitable
 from loguru import logger
 
-from rag.kb_chat.types import RewriteResult, KBChatConfig
+from rag.kb_chat.types import RewriteResult
+from core.config import KBChatSettings
 
 
 # Query 改写 Prompt 模板
-REWRITE_PROMPT_TEMPLATE = """请根据对话历史，将用户最新问题改写为一个独立、完整、适合知识库检索的问题。
+REWRITE_PROMPT_TEMPLATE = """你的任务是将用户的问题改写为适合知识库检索的完整问题。
 
-## 改写规则
-1. 消解指代词（它、这个、那个、他们等），替换为具体实体
-2. 补充省略的上下文信息，使问题独立完整
-3. 保持问题简洁，适合检索（不超过50字）
-4. 如果问题已经完整独立，保持原样
-5. 只输出改写后的问题，不要其他任何内容
+## 改写目标
+将用户输入转换为能够在知识库中有效检索到相关文档的查询语句。
+
+## 核心原则
+1. **检索导向**：改写后的问题必须能够匹配知识库中的具体内容
+2. **上下文融合**：分析对话历史，识别当前讨论的主题和实体
+3. **语义完整**：消解指代词和省略，形成独立完整的问题
+4. **相关性保持**：改写内容必须与对话上下文直接相关
+
+## 处理逻辑
+- 如果用户使用指代词，替换为对话中的具体实体
+- 如果用户问题省略主语，补充上下文中的主题
+- 如果用户表达质疑或困惑，将其转换为对当前讨论主题的具体重新查询
+- 如果问题已经完整独立，保持原样
+- 确保改写后的问题能够检索到实际的知识内容，而不是过程性或元认知问题
+
+## 输出要求
+只输出改写后的问题，不要解释或其他内容。
 
 ## 对话历史
 {history}
@@ -40,16 +49,11 @@ class QueryRewriter:
     Query 改写器
     
     将依赖上下文的问题改写为独立的检索 Query。
-    
-    Usage:
-        >>> rewriter = QueryRewriter(config, llm_fn)
-        >>> result = await rewriter.rewrite("它有什么优点？", history)
-        >>> search_query = result.rewritten_query
     """
     
     def __init__(
         self,
-        config: KBChatConfig,
+        config: KBChatSettings,
         llm_fn: Optional[Callable[[str], Awaitable[str]]] = None,
     ):
         """
@@ -106,15 +110,6 @@ class QueryRewriter:
                 reasoning="无对话历史，无需改写"
             )
         
-        # mode == "auto" 时，检查是否真的需要改写
-        if mode == "auto" and not self._needs_rewrite(query):
-            return RewriteResult(
-                original_query=query,
-                rewritten_query=query,
-                rewrite_applied=False,
-                reasoning="问题已完整，无需改写"
-            )
-        
         # 执行 LLM 改写
         try:
             result = await self._rewrite_with_llm(query, history)
@@ -139,39 +134,6 @@ class QueryRewriter:
                 rewrite_applied=False,
                 reasoning=f"改写失败: {str(e)}"
             )
-    
-    def _needs_rewrite(self, query: str) -> bool:
-        """
-        判断是否需要改写
-        
-        检查是否包含需要消解的指代词或省略。
-        
-        Args:
-            query: 用户问题
-            
-        Returns:
-            bool: 是否需要改写
-        """
-        # 指代词列表
-        pronouns = [
-            "它", "这个", "那个", "这", "那", "他", "她", "他们", "它们",
-            "上面", "前面", "刚才", "之前", "上文",
-        ]
-        
-        # 检查是否包含指代词
-        for pronoun in pronouns:
-            if pronoun in query:
-                return True
-        
-        # 检查是否是省略主语的问句
-        # 例如："有什么优点？"、"怎么使用？"
-        short_patterns = ["有什么", "是什么", "怎么", "如何", "为什么"]
-        if len(query) < 15:
-            for pattern in short_patterns:
-                if query.startswith(pattern):
-                    return True
-        
-        return False
     
     async def _rewrite_with_llm(
         self,
@@ -245,8 +207,8 @@ class QueryRewriter:
                 continue
             
             # 截断过长内容
-            if len(content) > 300:
-                content = content[:300] + "..."
+            # if len(content) > 300:
+            #     content = content[:300] + "..."
             
             role_name = {"user": "用户", "assistant": "助手"}.get(role, role)
             lines.append(f"{role_name}: {content}")

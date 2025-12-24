@@ -16,7 +16,8 @@
 from typing import List, Dict, Optional, Callable, Awaitable
 from loguru import logger
 
-from rag.kb_chat.types import UserIntent, IntentResult, KBChatConfig
+from rag.kb_chat.types import UserIntent, IntentResult
+from core.config import KBChatSettings
 
 
 class IntentRouter:
@@ -25,12 +26,6 @@ class IntentRouter:
     
     识别用户输入的意图，决定是否需要检索和改写。
     支持规则匹配和 LLM 两种模式。
-    
-    Usage:
-        >>> router = IntentRouter(config)
-        >>> result = await router.analyze("它有什么优点？", history)
-        >>> if result.should_search:
-        ...     # 执行检索
     """
     
     # 追问指示词（包含指代或追问意图）
@@ -57,7 +52,7 @@ class IntentRouter:
     
     def __init__(
         self,
-        config: KBChatConfig,
+        config: KBChatSettings,
         llm_fn: Optional[Callable[[str], Awaitable[str]]] = None,
     ):
         """
@@ -255,55 +250,79 @@ class IntentRouter:
         # 构建历史摘要（最近 2 轮）
         history_text = self._format_history(history[-4:]) if history else "无"
         
-        prompt = f"""分析用户意图，判断是否需要检索知识库。
+        prompt = f"""【任务】分析这句话的意图："{current_query}"
 
-## 对话历史
-{history_text}
+【上下文】对话历史仅供参考：{history_text}
 
-## 当前用户输入
-{current_query}
+【注意】只分析引号内的当前输入"{current_query}"，不要被历史内容混淆！
 
-## 请从以下意图中选择一个：
-1. knowledge_query - 新的知识查询，需要检索
-2. follow_up - 追问上文细节（如"它的优点是什么"），需要改写后检索
-3. topic_switch - 明确换到新话题（如"那NLP呢"），需要检索新话题
-4. clarification - 要求澄清上文回答，可能需要检索补充
-5. chitchat - 闲聊、确认、感谢，不需要检索
+根据当前输入选择意图：
+- knowledge_query: 完整独立的问题（如"什么是XXX"）
+- follow_up: 包含指代词的追问（如"它怎么用"）  
+- clarification: 质疑或困惑的表达（如"不对"、"没懂"）
+- topic_switch: 切换新话题（如"那XXX呢"）
+- chitchat: 礼貌用语（如"谢谢"、"好的"）
 
-## 输出格式（仅输出JSON，不要其他内容）
-{{"intent": "意图名称", "should_search": true/false, "rewrite_needed": true/false, "reasoning": "简短理由"}}
-"""
+should_search判断：
+- knowledge_query, follow_up, clarification, topic_switch → true
+- chitchat → false
+
+rewrite_needed判断：
+- 包含指代词或依赖上下文理解 → true
+- 完整独立的问题 → false
+
+输出JSON：
+{{"intent": "类型", "should_search": true/false, "rewrite_needed": true/false, "reasoning": "针对'{current_query}'的判断"}}"""
 
         response = await self._llm_fn(prompt)
         
         # 解析 LLM 返回的 JSON
         import json
         
-        # 尝试提取 JSON
-        response = response.strip()
-        if response.startswith("```"):
-            # 去除代码块标记
-            lines = response.split("\n")
-            response = "\n".join(lines[1:-1])
-        
-        result = json.loads(response)
-        
-        intent_str = result.get("intent", "knowledge_query").lower()
-        intent_map = {
-            "knowledge_query": UserIntent.KNOWLEDGE_QUERY,
-            "follow_up": UserIntent.FOLLOW_UP,
-            "topic_switch": UserIntent.TOPIC_SWITCH,
-            "clarification": UserIntent.CLARIFICATION,
-            "chitchat": UserIntent.CHITCHAT,
-        }
-        
-        return IntentResult(
-            intent=intent_map.get(intent_str, UserIntent.KNOWLEDGE_QUERY),
-            confidence=0.85,
-            should_search=result.get("should_search", True),
-            rewrite_needed=result.get("rewrite_needed", False),
-            reasoning=result.get("reasoning", "LLM判断")
-        )
+        try:
+            # 尝试提取 JSON
+            response = response.strip()
+            if response.startswith("```"):
+                # 去除代码块标记
+                lines = response.split("\n")
+                response = "\n".join(lines[1:-1])
+            
+            result_data = json.loads(response)
+            
+            # 解析意图
+            intent_str = result_data.get("intent", "knowledge_query").lower()
+            intent_map = {
+                "knowledge_query": UserIntent.KNOWLEDGE_QUERY,
+                "follow_up": UserIntent.FOLLOW_UP,
+                "topic_switch": UserIntent.TOPIC_SWITCH,
+                "clarification": UserIntent.CLARIFICATION,
+                "chitchat": UserIntent.CHITCHAT,
+            }
+            
+            intent = intent_map.get(intent_str, UserIntent.KNOWLEDGE_QUERY)
+            should_search = result_data.get("should_search", True)
+            rewrite_needed = result_data.get("rewrite_needed", False)
+            reasoning = result_data.get("reasoning", "LLM判断")
+            
+            return IntentResult(
+                intent=intent,
+                should_search=should_search,
+                rewrite_needed=rewrite_needed,
+                reasoning=reasoning,
+                confidence=0.8,  # LLM分析的置信度
+            )
+            
+        except Exception as e:
+            logger.warning("[IntentRouter] LLM意图识别解析失败: {}", str(e))
+            # 异常处理：使用保守策略
+            return IntentResult(
+                intent=UserIntent.FOLLOW_UP,
+                should_search=True,
+                rewrite_needed=True,
+                reasoning=f"LLM解析异常，采用保守策略: {str(e)}",
+                confidence=0.3,  # 异常情况置信度较低
+            )
+
     
     def _format_history(self, history: List[Dict]) -> str:
         """格式化历史对话"""

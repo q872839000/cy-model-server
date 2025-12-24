@@ -8,14 +8,14 @@ RAG 检索 API 路由
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
-from models.kb_schemas import (
+from models import (
     KBSearchRequest,
     SearchMode,
     SearchRequest,
     SearchHitResponse,
     SearchResponse,
 )
-from services.container import CONTAINER
+from core.container import CONTAINER
 
 router = APIRouter(prefix="/v1/kb", tags=["Knowledge Base"])
 

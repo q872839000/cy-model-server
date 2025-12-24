@@ -1,10 +1,7 @@
 """Transformers 引擎实现（包含 LLM、Embedding、Reranker）。
-实现要点：
 - 延迟加载（首次调用时加载模型），避免在没有 GPU / 资源时程序启动失败；
-- 提供同步接口，适配现有项目的调用约定；
 - 使用 transformers / sentence-transformers（若未安装会抛出清晰提示）。
-- 支持真正的流式输出（token级别）
-注意：真实生产环境下，模型加载和推理建议放到独立进程/容器中，避免阻塞主 API 进程。
+注意：模型加载和推理建议放到独立进程/容器中，避免阻塞主 API 进程。
 """
 
 from typing import List, Optional, Dict, Any, Iterator
@@ -16,7 +13,7 @@ from engines.base import LLMEngine, EmbeddingEngine, RerankerEngine
 
 class TransformersLLMEngine(LLMEngine):
     """基于 Hugging Face transformers 的简单 LLM 引擎封装（通用/因子车）。
-    - model_path: 本地路径或 HF 仓库标识符
+    - model_path: 本地路径或
     - dtype: 可选，'float16' 等
     - device: 可选，'cpu' 或 'cuda:0'
     - gen_params: 生成默认参数
@@ -180,5 +177,4 @@ class TransformersRerankerEngine(RerankerEngine):
         raw_scores = self._model.predict(pairs)
         # 应用 sigmoid 归一化
         scores = torch.sigmoid(torch.tensor(raw_scores)).tolist()
-        # 若需要 top_k，可以在调用端裁剪
         return scores

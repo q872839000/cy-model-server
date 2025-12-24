@@ -15,7 +15,7 @@ import time
 from core.config import AppSettings, load_settings
 from core.registry import REGISTRY
 from core.exceptions import ModelServerException
-from observability.logging import setup_logging
+from core.logging import setup_logging
 
 
 def _print_startup_banner(settings: AppSettings) -> None:
@@ -25,7 +25,7 @@ def _print_startup_banner(settings: AppSettings) -> None:
 	llm = REGISTRY.llm_count()
 	emb = REGISTRY.embedding_count()
 	rerank = REGISTRY.reranker_count()
-	
+
 	print("\n" + "=" * 60)
 	print("  ____ __   __  __  __  ___  ___  ___ _    ")
 	print(" / ___|\\ \\ / / |  \\/  |/ _ \\|   \\| __| |   ")
@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
 				REGISTRY.llm_count(), REGISTRY.embedding_count(), REGISTRY.reranker_count())
 	except Exception as e:
 		logger.error("加载模型配置失败: {}", e)
-	
+
 	# Startup: 初始化 Milvus 连接
 	try:
 		from storage.milvus import init_milvus, shutdown_milvus
@@ -78,12 +78,12 @@ async def lifespan(app: FastAPI):
 	except ImportError:
 		logger.info("Milvus 模块不可用，跳过初始化")
 		shutdown_milvus = None
-	
+
 	# 启动完成标识
 	_print_startup_banner(settings)
-	
+
 	yield  # 应用运行中
-	
+
 	# Shutdown: 清理资源
 	logger.info("服务关闭，清理资源...")
 	if shutdown_milvus:
@@ -147,8 +147,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
 
 def _setup_middleware(app: FastAPI, settings: AppSettings) -> None:
-	"""设置生产级中间件"""
-	
+	"""设置中间件"""
+
 	# CORS中间件
 	app.add_middleware(
 		CORSMiddleware,
@@ -157,21 +157,21 @@ def _setup_middleware(app: FastAPI, settings: AppSettings) -> None:
 		allow_methods=["*"],
 		allow_headers=["*"],
 	)
-	
+
 	# 信任主机中间件（生产环境）
 	if settings.env == "prod":
 		app.add_middleware(
 			TrustedHostMiddleware,
 			allowed_hosts=["*"]  # 根据实际需求配置
 		)
-	
+
 	# 请求日志中间件
 	@app.middleware("http")
 	async def log_requests(request: Request, call_next):
 		start_time = time.time()
 		response = await call_next(request)
 		process_time = time.time() - start_time
-		
+
 		logger.info(
 			"{} {} {} {}ms",
 			request.method,
@@ -179,13 +179,13 @@ def _setup_middleware(app: FastAPI, settings: AppSettings) -> None:
 			response.status_code,
 			round(process_time * 1000, 2)
 		)
-		
+
 		return response
 
 
 def _setup_exception_handlers(app: FastAPI) -> None:
 	"""设置异常处理器"""
-	
+
 	@app.exception_handler(ModelServerException)
 	async def model_server_exception_handler(request: Request, exc: ModelServerException):
 		logger.error("Model server error: {} - {}", exc.error_code, exc.message)
@@ -199,7 +199,7 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 			},
 			status_code=400
 		)
-	
+
 	@app.exception_handler(HTTPException)
 	async def http_exception_handler(request: Request, exc: HTTPException):
 		logger.warning("HTTP error: {} - {}", exc.status_code, exc.detail)
@@ -213,7 +213,7 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 			},
 			status_code=exc.status_code
 		)
-	
+
 	@app.exception_handler(Exception)
 	async def unhandled_exception_handler(request: Request, exc: Exception):
 		logger.exception("Unhandled error: {} {}", request.method, request.url)
@@ -239,10 +239,6 @@ app.include_router(kb_chat_router)
 
 
 if __name__ == "__main__":
-	"""
-	开发环境启动入口
-	生产环境请使用: uvicorn main:app --host 0.0.0.0 --port 8000
-	"""
 	settings = load_settings()
 	import uvicorn
 	# 直接传递 app 对象而非字符串，兼容 Nuitka 编译

@@ -94,6 +94,20 @@ class KBCollectionConfig(BaseSettings):
         description="BM25 参数 b，控制文档长度归一化"
     )
     
+    # 三路融合权重（用于 WeightedRanker）
+    dense_weight: float = Field(
+        default=1.0,
+        description="Dense 向量在混合检索中的权重"
+    )
+    content_sparse_weight: float = Field(
+        default=0.8,
+        description="Content Sparse (BM25) 在混合检索中的权重"
+    )
+    title_sparse_weight: float = Field(
+        default=0.5,
+        description="Title Sparse (BM25) 在混合检索中的权重"
+    )
+    
     model_config = SettingsConfigDict(env_prefix="KB_", extra="ignore")
     
     @classmethod

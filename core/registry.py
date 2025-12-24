@@ -44,6 +44,10 @@ class ModelRegistry:
 		self._llms: Dict[str, LLMEngine] = {}  # 模型名称 -> 引擎实例
 		self._embeddings: Dict[str, EmbeddingEngine] = {}  # 模型名称 -> 引擎实例
 		self._rerankers: Dict[str, RerankerEngine] = {}  # 模型名称 -> 引擎实例
+		# 规范化名称索引（用于忽略大小写匹配）
+		self._llm_name_index: Dict[str, str] = {}
+		self._embedding_name_index: Dict[str, str] = {}
+		self._reranker_name_index: Dict[str, str] = {}
 		# 默认模型（优先使用第一个加载的模型）
 		self._default_llm: Optional[str] = None
 		self._default_embedding: Optional[str] = None
@@ -53,35 +57,77 @@ class ModelRegistry:
 		# LLM模型特性参数
 		self._llm_features: Dict[str, dict] = {}
 
+	@staticmethod
+	def _normalize_name(name: Optional[str]) -> Optional[str]:
+		if name is None:
+			return None
+		return str(name).strip().lower()
+
+	def _resolve_llm_name(self, name: Optional[str]) -> Optional[str]:
+		if name is None:
+			return None
+		if name in self._llms:
+			return name
+		return self._llm_name_index.get(self._normalize_name(name) or "")
+
+	def _resolve_embedding_name(self, name: Optional[str]) -> Optional[str]:
+		if name is None:
+			return None
+		if name in self._embeddings:
+			return name
+		return self._embedding_name_index.get(self._normalize_name(name) or "")
+
+	def _resolve_reranker_name(self, name: Optional[str]) -> Optional[str]:
+		if name is None:
+			return None
+		if name in self._rerankers:
+			return name
+		return self._reranker_name_index.get(self._normalize_name(name) or "")
+
 	def get_llm(self, name: Optional[str]) -> Optional[LLMEngine]:
 		"""获取指定名称的LLM引擎实例。"""
 		if name is None:
 			name = self._default_llm
-		return self._llms.get(name)
+		resolved = self._resolve_llm_name(name)
+		if resolved is None:
+			return None
+		return self._llms.get(resolved)
 
 	def get_llm_strategy_key(self, name: Optional[str]) -> Optional[str]:
 		"""获取指定名称的LLM对话策略。"""
 		if name is None:
 			name = self._default_llm
-		return self._llm_strategies.get(name)
+		resolved = self._resolve_llm_name(name)
+		if resolved is None:
+			return None
+		return self._llm_strategies.get(resolved)
 
 	def get_llm_features(self, name: Optional[str]) -> dict:
 		"""获取指定名称的LLM模型特性参数。"""
 		if name is None:
 			name = self._default_llm
-		return self._llm_features.get(name, {})
+		resolved = self._resolve_llm_name(name)
+		if resolved is None:
+			return {}
+		return self._llm_features.get(resolved, {})
 
 	def get_embedding(self, name: Optional[str]) -> Optional[EmbeddingEngine]:
 		"""获取指定名称的Embedding引擎实例。"""
 		if name is None:
 			name = self._default_embedding
-		return self._embeddings.get(name)
+		resolved = self._resolve_embedding_name(name)
+		if resolved is None:
+			return None
+		return self._embeddings.get(resolved)
 
 	def get_reranker(self, name: Optional[str]) -> Optional[RerankerEngine]:
 		"""获取指定名称的Reranker引擎实例。"""
 		if name is None:
 			name = self._default_reranker
-		return self._rerankers.get(name)
+		resolved = self._resolve_reranker_name(name)
+		if resolved is None:
+			return None
+		return self._rerankers.get(resolved)
 
 	def has_any_llm(self) -> bool:
 		"""是否加载了任何LLM模型。"""
@@ -114,6 +160,9 @@ class ModelRegistry:
 		self._llms.clear()
 		self._embeddings.clear()
 		self._rerankers.clear()
+		self._llm_name_index.clear()
+		self._embedding_name_index.clear()
+		self._reranker_name_index.clear()
 		self._llm_strategies.clear()
 		self._llm_features.clear()
 		self._default_llm = None
@@ -169,6 +218,9 @@ class ModelRegistry:
 					# 只有加载成功才添加到注册表
 				self._llms[llm_conf.name] = engine
 				self._llm_strategies[llm_conf.name] = llm_conf.chat_strategy
+				normalized_name = self._normalize_name(llm_conf.name)
+				if normalized_name:
+					self._llm_name_index[normalized_name] = llm_conf.name
 				if llm_conf.model_features:
 					self._llm_features[llm_conf.name] = llm_conf.model_features
 				if self._default_llm is None:
@@ -197,6 +249,9 @@ class ModelRegistry:
 					engine._ensure_loaded()
 				# 只有加载成功才添加到注册表
 				self._embeddings[emb_conf.name] = engine
+				normalized_name = self._normalize_name(emb_conf.name)
+				if normalized_name:
+					self._embedding_name_index[normalized_name] = emb_conf.name
 				if self._default_embedding is None:
 					self._default_embedding = emb_conf.name
 				logger.info("Embedding loaded: {} via {}", emb_conf.name, emb_conf.engine)
@@ -223,6 +278,9 @@ class ModelRegistry:
 					engine._ensure_loaded()
 				# 只有加载成功才添加到注册表
 				self._rerankers[r_conf.name] = engine
+				normalized_name = self._normalize_name(r_conf.name)
+				if normalized_name:
+					self._reranker_name_index[normalized_name] = r_conf.name
 				if self._default_reranker is None:
 					self._default_reranker = r_conf.name
 				logger.info("Reranker loaded: {} via {}", r_conf.name, r_conf.engine)

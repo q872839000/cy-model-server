@@ -14,7 +14,7 @@ from typing import List, Dict, Optional
 from enum import Enum
 from loguru import logger
 
-from rag.kb_chat.types import KBChatConfig
+from core.config import KBChatSettings
 
 
 class ModelFamily(str, Enum):
@@ -41,7 +41,6 @@ DEFAULT_KB_SYSTEM_PROMPT = """你是一个专业的知识库问答助手，严�
 5. 坦诚告知：信息不足时请说明"知识库中未找到相关信息"
 
 ## 禁止行为
-- 禁止从"员工招聘"相关内容回答"请假"问题
 - 禁止编造具体数字、百分比、流程步骤等知识库中不存在的内容
 - 禁止将检索结果中的概念错误关联
 
@@ -58,15 +57,6 @@ class PromptBuilder:
     Prompt 组装器
     
     根据不同模型类型组装对话消息。
-    
-    Usage:
-        >>> builder = PromptBuilder(config)
-        >>> messages = builder.build(
-        ...     model_family=ModelFamily.GLM,
-        ...     user_query="什么是RAG？",
-        ...     search_hits=[...],
-        ...     history=[...]
-        ... )
     """
     
     # 模型家族映射（模型名称关键词 -> 家族）
@@ -79,7 +69,7 @@ class PromptBuilder:
     
     def __init__(
         self,
-        config: KBChatConfig,
+        config: KBChatSettings,
         system_prompt: Optional[str] = None,
     ):
         """

@@ -12,61 +12,142 @@ API端点：
 - GET /v1/models - 列出可用模型
 """
 
-from fastapi import APIRouter, HTTPException, Request, Depends
-from pydantic import BaseModel
-from typing import List, Any, Dict
+from fastapi import APIRouter, HTTPException, Request
 from workers.model_worker import WORKER
 from core.exceptions import ModelServerException
 from starlette.responses import StreamingResponse
+from utils.message_filter import clean_messages_for_history
+from models import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ChatCompletionUsage,
+    ChatCompletionChoice,
+    ChatCompletionResponse,
+    ChatCompletionDelta,
+    ChatCompletionChunkChoice,
+    ChatCompletionChunkResponse,
+    EmbeddingRequest,
+    EmbeddingData,
+    EmbeddingResponse,
+    ModelInfo,
+    ModelListResponse
+)
 import uuid
+import time
+from functools import lru_cache
+
+from core.container import CONTAINER
+
+try:
+    from transformers import AutoTokenizer
+except Exception:
+    AutoTokenizer = None
 
 router = APIRouter()
 
 
-class ChatMessage(BaseModel):
+@lru_cache(maxsize=16)
+def _load_tokenizer(model_path: str):
     """
-    聊天消息
+    缓存式加载tokenizer
     
-    属性:
-        role: 消息角色，可选值：system(系统)、user(用户)、assistant(助手)
-        content: 消息内容文本
-    """
-    role: str
-    content: str
-
-
-class ChatCompletionRequest(BaseModel):
-    """
-    聊天补全请求
+    用于无法从已加载模型引擎获取tokenizer时的兜底方案
+    使用LRU缓存避免重复从磁盘加载同一个tokenizer
     
-    属性:
-        model: 使用的LLM模型名称
-        messages: 对话历史消息列表
-        max_tokens: 最大生成token数，默认2048
-        temperature: 生成温度(0-2)，越高越随机，默认0.0
-        top_p: 核采样参数(0-1)，默认1.0
-        stream: 是否使用流式输出，默认False
-        enable_thinking: 是否启用深度思考模式，默认True
+    参数:
+        model_path: 模型文件路径
+        
+    返回:
+        tokenizer实例或None（当transformers库不可用时）
     """
-    model: str
-    messages: List[ChatMessage]
-    max_tokens: int = 2048
-    temperature: float = 0.0
-    top_p: float = 1.0
-    stream: bool = False
-    enable_thinking: bool = True
+    # 兜底加载 tokenizer（用于无法从已加载引擎上拿到 tokenizer 的场景）
+    if AutoTokenizer is None:
+        return None
+    return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
 
-class EmbeddingRequest(BaseModel):
+def _get_tokenizer_for_model(model_name: str):
     """
-    嵌入生成请求
+    获取指定模型的tokenizer实例
     
-    属性:
-        model: 使用的Embedding模型名称
-        input: 待向量化的文本列表
+    按优先级尝试以下方式获取tokenizer:
+    1. 从已加载的模型引擎中获取 (_tokenizer 属性)
+    2. 从引擎的fallback对象中获取
+    3. 根据模型路径重新加载
+    
+    参数:
+        model_name: 模型名称
+        
+    返回:
+        tokenizer实例或None（获取失败时）
     """
-    model: str
-    input: List[str]
+    # 优先复用已加载模型的 tokenizer，避免重复从磁盘加载
+    try:
+        engine, _ = CONTAINER.get_llm_and_strategy(model_name)
+        if engine is None:
+            return None
+        tok = getattr(engine, "_tokenizer", None)
+        if tok is not None:
+            return tok
+        fallback = getattr(engine, "_fallback", None)
+        if fallback is not None:
+            tok2 = getattr(fallback, "_tokenizer", None)
+            if tok2 is not None:
+                return tok2
+        model_path = getattr(engine, "model_path", None)
+        if model_path:
+            return _load_tokenizer(str(model_path))
+    except Exception:
+        return None
+    return None
+
+
+def _count_tokens(tokenizer, text: str) -> int:
+    """
+    统计文本的token数量
+    
+    用于usage统计，尽量排除special tokens以更接近OpenAI的计算方式
+    注意：不同tokenizer的计数规则可能略有差异，此处仅做近似估算
+    
+    参数:
+        tokenizer: tokenizer实例
+        text: 待统计的文本
+        
+    返回:
+        token数量（统计失败时返回0）
+    """
+    # 统计 token 数（仅用于 usage 估算；不同 tokenizer 的计数规则可能略有差异）
+    if tokenizer is None or not text:
+        return 0
+    try:
+        # 尽量不把 special tokens 计入（更接近 OpenAI usage 语义）
+        try:
+            return len(tokenizer.encode(text, add_special_tokens=False))
+        except TypeError:
+            return len(tokenizer.encode(text))
+    except Exception:
+        return 0
+
+
+def _infer_finish_reason(completion_tokens: int, max_tokens: int | None) -> str:
+    """
+    推断生成结束的原因
+    
+    OpenAI 兼容：根据生成的token数量与最大限制判断结束原因
+    - 达到max_tokens限制：返回"length"
+    - 自然结束或其他原因：返回"stop"
+    
+    参数:
+        completion_tokens: 实际生成的token数量
+        max_tokens: 最大token限制
+        
+    返回:
+        结束原因字符串："stop" 或 "length"
+    """
+    if max_tokens is None or max_tokens <= 0 or completion_tokens < max_tokens:
+        return "stop"
+    return "length"
+
 
 @router.post('/v1/chat/completions')
 async def chat_completions(req: ChatCompletionRequest, request: Request):
@@ -89,78 +170,160 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         HTTPException: 当推理失败时抛出500错误
     """
     try:
+        # 过滤历史消息中的思考内容，避免干扰和冗余
+        cleaned_messages = clean_messages_for_history([m.model_dump() for m in req.messages])
+        
+        # 预先构造 prompt 并统计 prompt_tokens（流式/非流式共用，避免重复计算）
+        _, strategy = CONTAINER.get_llm_and_strategy(req.model)
+        tokenizer = _get_tokenizer_for_model(req.model)
+        prompt = strategy.apply_chat_template(cleaned_messages) if strategy else ""
+        prompt_tokens = _count_tokens(tokenizer, prompt)
         if not req.stream:
             # 非流式：一次性返回
             text = await WORKER.generate_chat(
                 model_name=req.model,
-                messages=[m.model_dump() for m in req.messages],
+                messages=cleaned_messages,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 top_p=req.top_p,
                 enable_thinking=req.enable_thinking,
             )
-            return {
-                'id': f'chatcmpl-{uuid.uuid4().hex[:8]}',
-                'object': 'chat.completion',
-                'created': int(__import__('time').time()),
-                'model': req.model,
-                'choices': [
-                    {
-                        'index': 0,
-                        'message': {'role': 'assistant', 'content': text},
-                        'finish_reason': 'stop',
-                    }
+
+            # completion_tokens 统计基于最终输出文本
+            completion_tokens = _count_tokens(tokenizer, text)
+            usage = ChatCompletionUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+
+            return ChatCompletionResponse(
+                id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                created=int(time.time()),
+                model=req.model,
+                choices=[
+                    ChatCompletionChoice(
+                        index=0,
+                        message=ChatMessage(role="assistant", content=text),
+                        finish_reason=_infer_finish_reason(completion_tokens, req.max_tokens),
+                    )
                 ],
-                'usage': {
-                    'prompt_tokens': 0,
-                    'completion_tokens': 0,
-                    'total_tokens': 0
-                }
-            }
+                usage=usage,
+            )
 
         # 流式：SSE 格式输出
         import orjson as _oj
-        import time as _time
-        
+
         async def event_generator():
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-            created = int(_time.time())
-            
-            def make_chunk(delta: dict, finish_reason: str = None) -> str:
-                """构造 SSE chunk"""
-                return _oj.dumps({
-                    "id": chunk_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": req.model,
-                    "choices": [{
-                        "index": 0,
-                        "delta": delta,
-                        "finish_reason": finish_reason
-                    }]
-                }).decode()
-            
-            # 发送 role 首块
-            yield f"data: {make_chunk({'role': 'assistant', 'content': ''})}\n\n"
-            
+            created = int(time.time())
+
+            # OpenAI 兼容：stream_options.include_usage=true 时，在最后追加一个仅含 usage 的 chunk
+            include_usage = bool(req.stream_options and req.stream_options.include_usage)
+
+            def dump_chunk(chunk: ChatCompletionChunkResponse) -> str:
+                return _oj.dumps(chunk.model_dump(exclude_none=True)).decode()
+
+            yield (
+                "data: "
+                + dump_chunk(
+                    ChatCompletionChunkResponse(
+                        id=chunk_id,
+                        created=created,
+                        model=req.model,
+                        choices=[
+                            ChatCompletionChunkChoice(
+                                index=0,
+                                delta=ChatCompletionDelta(role="assistant"),
+                                finish_reason=None,
+                            )
+                        ],
+                    )
+                )
+                + "\n\n"
+            )
+
             # 流式生成：使用统一的 generate_chat 接口
+            full_text = ""
             try:
                 async for text_chunk in WORKER.generate_chat(
                     model_name=req.model,
-                    messages=[m.model_dump() for m in req.messages],
+                    messages=cleaned_messages,
                     max_tokens=req.max_tokens,
                     temperature=req.temperature,
                     top_p=req.top_p,
                     stream=True,
                     enable_thinking=req.enable_thinking,
                 ):
-                    yield f"data: {make_chunk({'content': text_chunk})}\n\n"
+                    # 为了在流式结束后计算 completion_tokens，需要拼接完整输出
+                    if text_chunk:
+                        full_text += text_chunk
+                        # 只有非空chunk才发送，避免无意义的空包
+                        yield (
+                            "data: "
+                            + dump_chunk(
+                                ChatCompletionChunkResponse(
+                                    id=chunk_id,
+                                    created=created,
+                                    model=req.model,
+                                    choices=[
+                                        ChatCompletionChunkChoice(
+                                            index=0,
+                                            delta=ChatCompletionDelta(content=text_chunk),
+                                            finish_reason=None,
+                                        )
+                                    ],
+                                )
+                            )
+                            + "\n\n"
+                        )
             except Exception:
-                yield f"data: {make_chunk({}, 'error')}\n\n"
                 raise
-            
+
+            # 结束后统一计算 completion_tokens，并决定 finish_reason
+            completion_tokens = _count_tokens(tokenizer, full_text)
+
             # 结束块
-            yield f"data: {make_chunk({}, 'stop')}\n\n"
+            yield (
+                "data: "
+                + dump_chunk(
+                    ChatCompletionChunkResponse(
+                        id=chunk_id,
+                        created=created,
+                        model=req.model,
+                        choices=[
+                            ChatCompletionChunkChoice(
+                                index=0,
+                                delta=ChatCompletionDelta(),
+                                finish_reason=_infer_finish_reason(completion_tokens, req.max_tokens),
+                            )
+                        ],
+                    )
+                )
+                + "\n\n"
+            )
+
+            if include_usage:
+                # OpenAI 兼容：最后额外发一个 chunk，choices=[]，usage 有值
+                usage = ChatCompletionUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                )
+                yield (
+                    "data: "
+                    + dump_chunk(
+                        ChatCompletionChunkResponse(
+                            id=chunk_id,
+                            created=created,
+                            model=req.model,
+                            choices=[],
+                            usage=usage,
+                        )
+                    )
+                    + "\n\n"
+                )
+
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -195,11 +358,13 @@ async def embeddings(req: EmbeddingRequest, request: Request):
             model_name=req.model,
             texts=req.input
         )
-        
-        return {
-            'object': 'list',
-            'data': [{'embedding': v, 'index': i} for i, v in enumerate(vecs)]
-        }
+
+        return EmbeddingResponse(
+            object='list',
+            data=[EmbeddingData(index=i, embedding=v) for i, v in enumerate(vecs)],
+            model=req.model,
+            dimension=(len(vecs[0]) if vecs else None)
+        )
     except ModelServerException:
         # 让全局异常处理器处理
         raise
@@ -208,12 +373,12 @@ async def embeddings(req: EmbeddingRequest, request: Request):
 
 
 @router.get('/v1/models')
-async def list_models(request: Request):
+async def list_models(request: Request) -> ModelListResponse:
     """
     列出所有可用的模型（兼容OpenAI格式）
     
     返回系统中已加载的所有模型，包括：
-    - LLM模型（聊天补全）
+    - LLM模型
     - Embedding模型（文本向量化）
     - Reranker模型（重排序）
     
@@ -221,26 +386,35 @@ async def list_models(request: Request):
         request: FastAPI请求对象
         
     返回:
-        JSON格式的模型列表响应，包含：
-        - object: 固定值'list'
-        - data: 模型列表，每个模型包含id、object、created、owned_by等字段
+        ModelListResponse: 标准格式的模型列表响应
         
     异常:
         HTTPException: 当获取模型列表失败时抛出500错误
     """
     try:
         model_info = WORKER.get_model_info()
-        return {
-            'object': 'list',
-            'data': [
-                {
-                    'id': model,
-                    'object': 'model',
-                    'created': 1234567890,
-                    'owned_by': 'cy-model-server'
-                }
-                for model in model_info['llm_models'] + model_info['embedding_models'] + model_info['reranker_models']
-            ]
-        }
+        current_timestamp = int(time.time())
+        
+        # 合并所有类型的模型并构造响应
+        all_models = (
+            model_info.get('llm_models', []) + 
+            model_info.get('embedding_models', []) + 
+            model_info.get('reranker_models', [])
+        )
+        
+        model_list = [
+            ModelInfo(
+                id=model,
+                created=current_timestamp,
+                owned_by='cy-model-server'
+            )
+            for model in all_models
+        ]
+        
+        return ModelListResponse(data=model_list)
+        
+    except ModelServerException:
+        # 让全局异常处理器处理
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'获取模型列表失败: {str(e)}')

@@ -16,7 +16,7 @@ from loguru import logger
 
 from storage.milvus.config import KBCollectionConfig, load_kb_collection_config
 from storage.milvus.client import MilvusClient, MilvusConnectionError
-from models.kb_schemas import KBChunk, KBDocument
+from models import KBChunk, KBDocument
 
 # 延迟导入 pymilvus
 _pymilvus_available = False
@@ -242,9 +242,9 @@ class KBCollectionManager:
         创建知识库 Collection 的 Schema。
         
         Schema 包含：
-        - 基础字段：id, doc_id, doc_name, chapter, chapter_path, chunk_idx, content
+        - 基础字段：id, doc_id, doc_name, chapter, chapter_path, chunk_idx, content, title
         - 位置字段：start_pos, end_pos, overlap_prev, overlap_next
-        - 向量字段：dense_vector (稠密), sparse_vector (稀疏/BM25)
+        - 向量字段：dense_vector (稠密), sparse_vector (内容BM25), title_sparse_vector (标题BM25)
         - 元数据字段：metadata (JSON), created_at
         
         Returns:
@@ -334,11 +334,29 @@ class KBCollectionManager:
                 description="稠密向量（embedding）"
             ),
             
-            # 稀疏向量（BM25 检索）
+            # 标题字段（用于 BM25 检索，由 doc_name + chapter 拼接）
+            FieldSchema(
+                name="title",
+                dtype=DataType.VARCHAR,
+                max_length=1024,
+                enable_analyzer=True,
+                enable_match=True,
+                analyzer_params={"type": "chinese"},
+                description="标题（doc_name + chapter 拼接，用于 BM25 检索）"
+            ),
+            
+            # 内容稀疏向量（BM25 检索）
             FieldSchema(
                 name="sparse_vector",
                 dtype=DataType.SPARSE_FLOAT_VECTOR,
-                description="稀疏向量（BM25）"
+                description="内容稀疏向量（BM25）"
+            ),
+            
+            # 标题稀疏向量（BM25 检索）
+            FieldSchema(
+                name="title_sparse_vector",
+                dtype=DataType.SPARSE_FLOAT_VECTOR,
+                description="标题稀疏向量（BM25）"
             ),
             
             # 元数据
@@ -355,17 +373,25 @@ class KBCollectionManager:
         ]
         
         # BM25 函数：从 content 自动生成 sparse_vector
-        bm25_function = Function(
+        content_bm25_function = Function(
             name="content_bm25",
             input_field_names=["content"],
             output_field_names=["sparse_vector"],
             function_type=FunctionType.BM25,
         )
         
+        # BM25 函数：从 title 自动生成 title_sparse_vector
+        title_bm25_function = Function(
+            name="title_bm25",
+            input_field_names=["title"],
+            output_field_names=["title_sparse_vector"],
+            function_type=FunctionType.BM25,
+        )
+        
         schema = CollectionSchema(
             fields=fields,
-            description="知识库切片，支持混合检索（Dense + BM25）",
-            functions=[bm25_function]
+            description="知识库切片，支持三路混合检索（Dense + Content BM25 + Title BM25）",
+            functions=[content_bm25_function, title_bm25_function]
         )
         
         return schema
@@ -387,7 +413,7 @@ class KBCollectionManager:
             index_name="idx_dense_vector"
         )
         
-        # Sparse Vector 索引（BM25）
+        # Content Sparse Vector 索引（BM25）
         sparse_index_params = {
             "index_type": "SPARSE_INVERTED_INDEX",
             "metric_type": "BM25",
@@ -402,11 +428,47 @@ class KBCollectionManager:
             index_name="idx_sparse_vector"
         )
         
+        # Title Sparse Vector 索引（BM25）
+        title_sparse_index_params = {
+            "index_type": "SPARSE_INVERTED_INDEX",
+            "metric_type": "BM25",
+            "params": {
+                "bm25_k1": self._config.bm25_k1,
+                "bm25_b": self._config.bm25_b,
+            }
+        }
+        collection.create_index(
+            field_name="title_sparse_vector",
+            index_params=title_sparse_index_params,
+            index_name="idx_title_sparse_vector"
+        )
+        
         # 标量字段索引
         collection.create_index(field_name="doc_name", index_name="idx_doc_name")
         collection.create_index(field_name="doc_id", index_name="idx_doc_id")
         
-        logger.debug("索引创建完成")
+        logger.debug("索引创建完成（Dense + Content Sparse + Title Sparse）")
+    
+    @staticmethod
+    def _build_title(doc_name: str, chapter: str) -> str:
+        """
+        构建用于 BM25 检索的标题字段。
+        
+        将 doc_name 和 chapter 拼接，中间用空格分隔，便于分词器切分。
+        
+        Args:
+            doc_name: 文档名称
+            chapter: 章节标题
+            
+        Returns:
+            str: 拼接后的标题
+        """
+        parts = []
+        if doc_name:
+            parts.append(doc_name.strip())
+        if chapter:
+            parts.append(chapter.strip())
+        return " ".join(parts)
     
     # ==================== 数据操作 ====================
     
@@ -451,6 +513,7 @@ class KBCollectionManager:
                 "chapter_path": chunk.chapter_path,
                 "chunk_idx": chunk.chunk_idx,
                 "content": chunk.content,
+                "title": self._build_title(chunk.doc_name, chunk.chapter),
                 "start_pos": chunk.position.start_pos,
                 "end_pos": chunk.position.end_pos,
                 "overlap_prev": chunk.overlap.prev_chars,

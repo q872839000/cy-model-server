@@ -13,7 +13,7 @@ import time
 from typing import Optional, List, Dict, Any, Callable
 from loguru import logger
 
-from models.kb_schemas import (
+from models import (
     KBSearchRequest,
     KBSearchResponse,
     KBSearchHit,

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from core.registry import REGISTRY
 from core.exceptions import ModelNotFoundError, InferenceError
-from services.container import CONTAINER
+from core.container import CONTAINER
 
 
 class ModelWorker:

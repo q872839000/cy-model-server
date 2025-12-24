@@ -11,20 +11,25 @@ import time
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
-from models.kb_schemas import (
+from models import (
     KBChatRequest,
     KBChatResponse,
     KBChatChoice,
     KBChatMessageResponse,
     KBChatInfo,
     KBSourceReference,
+    KBChatDelta,
+    KBChatChunkChoice,
+    KBChatChunkResponse,
 )
-from rag.kb_chat import KBChatService, KBChatConfig
-from services.container import CONTAINER
+from core.exceptions import ModelServerException
+from rag.kb_chat import KBChatService
+from utils.message_filter import clean_messages_for_history
+from core.container import CONTAINER
 from workers.model_worker import WORKER
 
 
@@ -38,7 +43,18 @@ _kb_chat_service: Optional[KBChatService] = None
 
 
 def _get_kb_chat_service() -> KBChatService:
-    """获取知识库对话服务实例"""
+    """
+    获取知识库对话服务实例
+    
+    使用全局缓存避免重复初始化服务。如果RAG服务不可用，
+    则抛出HTTP 503错误。
+    
+    返回:
+        KBChatService: 知识库对话服务实例
+        
+    异常:
+        HTTPException: 当RAG服务不可用时抛出503错误
+    """
     global _kb_chat_service
     
     if _kb_chat_service is not None:
@@ -53,8 +69,23 @@ def _get_kb_chat_service() -> KBChatService:
         )
     
     # 创建 LLM 调用函数
-    async def llm_fn(model, messages, max_tokens, temperature, top_p=0.95, enable_thinking=True, **kwargs):
-        """非流式 LLM 调用"""
+    async def llm_fn(model: str, messages: List[dict], max_tokens: int, temperature: float, top_p: float = 0.95, enable_thinking: bool = True, **kwargs) -> str:
+        """
+        非流式LLM调用函数
+        
+        封装WORKER.generate_chat为知识库对话服务提供统一的LLM接口
+        
+        参数:
+            model: 模型名称
+            messages: 对话消息列表
+            max_tokens: 最大生成token数
+            temperature: 生成温度
+            top_p: 核采样参数
+            enable_thinking: 是否启用深度思考模式
+            
+        返回:
+            生成的文本内容
+        """
         return await WORKER.generate_chat(
             model_name=model,
             messages=messages,
@@ -65,8 +96,23 @@ def _get_kb_chat_service() -> KBChatService:
             enable_thinking=enable_thinking,
         )
     
-    async def llm_stream_fn(model, messages, max_tokens, temperature, top_p=0.95, enable_thinking=True, **kwargs):
-        """流式 LLM 调用"""
+    async def llm_stream_fn(model: str, messages: List[dict], max_tokens: int, temperature: float, top_p: float = 0.95, enable_thinking: bool = True, **kwargs):
+        """
+        流式LLM调用函数
+        
+        封装WORKER.generate_chat的流式调用为知识库对话服务提供统一接口
+        
+        参数:
+            model: 模型名称
+            messages: 对话消息列表
+            max_tokens: 最大生成token数
+            temperature: 生成温度
+            top_p: 核采样参数
+            enable_thinking: 是否启用深度思考模式
+            
+        生成:
+            文本块迭代器
+        """
         async for chunk in WORKER.generate_chat(
             model_name=model,
             messages=messages,
@@ -78,15 +124,12 @@ def _get_kb_chat_service() -> KBChatService:
         ):
             yield chunk
     
-    # 创建配置
-    config = KBChatConfig()
-    
-    # 创建服务
+    # 创建服务（使用全局配置管理器）
     _kb_chat_service = KBChatService(
         rag_service=rag_service,
         llm_fn=llm_fn,
         llm_stream_fn=llm_stream_fn,
-        config=config,
+        # config 参数为 None，服务内部会自动使用 KBChatConfigManager.get_config()
     )
     
     logger.info("知识库对话服务初始化完成")
@@ -101,24 +144,36 @@ def _get_kb_chat_service() -> KBChatService:
     summary="知识库对话",
     description="基于知识库的智能对话，支持多轮对话、Query改写、引用溯源",
 )
-async def kb_chat_completions(request: KBChatRequest):
+async def kb_chat_completions(request: KBChatRequest) -> KBChatResponse | StreamingResponse:
     """
-    知识库对话 API
+    知识库对话 API（兼容OpenAI格式）
     
-    流程：
-    1. 意图识别：判断是否需要检索
-    2. Query 改写：多轮对话时优化检索 query
-    3. RAG 检索：混合检索 + 重排序
-    4. Prompt 组装：根据模型类型组装消息
-    5. LLM 生成：生成回答
+    基于知识库的智能对话，集成RAG检索和大模型生成。
+    支持意图识别、查询改写、混合检索、重排序等高级功能。
     
-    支持流式和非流式两种模式。
+    处理流程：
+    1. 意图识别：判断是否需要检索知识库
+    2. Query改写：多轮对话下优化检索查询
+    3. RAG检索：混合检索策略 + 重排序优化
+    4. Prompt组装：根据模型类型智能组装上下文
+    5. LLM生成：调用大模型生成回答
+    
+    参数:
+        request: 知识库对话请求对象，包含模型、消息、检索参数等
+        
+    返回:
+        非流式: KBChatResponse - JSON格式的完整响应，包含回答和知识库信息
+        流式: StreamingResponse - SSE格式的流式响应，逐步返回生成内容
+        
+    异常:
+        HTTPException: 当对话失败时抛出500错误
     """
-    service = _get_kb_chat_service()
-    
     try:
-        # 转换消息格式
-        messages = [msg.model_dump() for msg in request.messages]
+        # 获取知识库对话服务实例
+        service = _get_kb_chat_service()
+        
+        # 转换消息格式为Python字典，并过滤历史消息中的思考内容
+        messages = clean_messages_for_history([msg.model_dump() for msg in request.messages])
         
         if not request.stream:
             # 非流式
@@ -170,12 +225,15 @@ async def kb_chat_completions(request: KBChatRequest):
                 ),
             )
         
-        # 流式
+        # 流式：返回SSE流式响应
         return StreamingResponse(
             _generate_stream(service, request, messages),
             media_type="text/event-stream",
         )
         
+    except ModelServerException:
+        # 让全局异常处理器处理
+        raise
     except Exception as e:
         logger.error("知识库对话失败: {}", str(e))
         raise HTTPException(status_code=500, detail=f"对话失败: {str(e)}")
@@ -187,31 +245,49 @@ async def _generate_stream(
     messages: List[dict],
 ):
     """
-    生成流式响应
+    生成知识库对话的流式响应
     
-    SSE 格式输出，兼容 OpenAI 流式格式。
+    使用Server-Sent Events (SSE)格式输出，兼容OpenAI流式格式。
+    支持搜索状态推送、内容流式生成和错误处理。
+    
+    参数:
+        service: 知识库对话服务实例
+        request: 知识库对话请求对象
+        messages: 已转换的消息列表
+        
+    生成:
+        SSE数据流，包含搜索状态、内容块和结束标记
     """
     import orjson
     
     chat_id = f"kbchat-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
     
-    def make_chunk(delta: dict, finish_reason: str = None, kb_info: dict = None) -> str:
-        """构造 SSE chunk"""
-        data = {
-            "id": chat_id,
-            "object": "kb.chat.completion.chunk",
-            "created": created,
-            "model": request.model,
-            "choices": [{
-                "index": 0,
-                "delta": delta,
-                "finish_reason": finish_reason,
-            }],
-        }
-        if kb_info:
-            data["kb_info"] = kb_info
-        return orjson.dumps(data).decode()
+    def make_chunk(delta: KBChatDelta, finish_reason: Optional[str] = None, kb_info: Optional[KBChatInfo] = None) -> str:
+        """
+        构造SSE数据块
+        
+        使用Pydantic模型构造标准化的流式响应块，确保数据结构的一致性
+        
+        参数:
+            delta: 增量内容对象
+            finish_reason: 结束原因（可选）
+            kb_info: 知识库相关信息（可选）
+            
+        返回:
+            JSON格式的SSE数据块字符串
+        """
+        chunk = KBChatChunkResponse(
+            id=chat_id,
+            created=created,
+            model=request.model,
+            choices=[KBChatChunkChoice(
+                delta=delta,
+                finish_reason=finish_reason,
+            )],
+            kb_info=kb_info,
+        )
+        return orjson.dumps(chunk.model_dump(exclude_none=True)).decode()
     
     try:
         async for event in service.chat_stream(
@@ -239,26 +315,46 @@ async def _generate_stream(
                 pass
             
             elif event_type == "search_done":
-                # 发送检索结果信息
-                yield f"data: {make_chunk({'role': 'assistant'}, kb_info=event_data)}\n\n"
+                # 发送检索结果信息，包含初始角色标识
+                kb_info_obj = None
+                if event_data:
+                    try:
+                        # 为缺失的必填字段提供默认值
+                        kb_data = {
+                            "search_performed": True,  # 既然有search_done事件，说明进行了检索
+                            "intent": "search",  # 默认意图为检索
+                            **event_data  # 使用event_data的其他字段
+                        }
+                        kb_info_obj = KBChatInfo(**kb_data)
+                    except Exception as e:
+                        logger.warning("KBChatInfo构造失败: {}, event_data: {}", str(e), event_data)
+                        # 构造失败时不传递kb_info
+                        kb_info_obj = None
+                yield f"data: {make_chunk(KBChatDelta(role='assistant'), kb_info=kb_info_obj)}\n\n"
             
             elif event_type == "content":
-                # 发送内容片段
+                # 发送内容片段，跳过空内容避免无意义的空包
                 text = event_data.get("text", "")
-                yield f"data: {make_chunk({'content': text})}\n\n"
+                if text:  # 只有非空内容才发送
+                    yield f"data: {make_chunk(KBChatDelta(content=text))}\n\n"
             
             elif event_type == "done":
                 # 发送结束标记
-                yield f"data: {make_chunk({}, 'stop')}\n\n"
+                yield f"data: {make_chunk(KBChatDelta(), 'stop')}\n\n"
                 yield "data: [DONE]\n\n"
             
             elif event_type == "error":
-                # 发送错误
+                # 发送错误信息
                 error_msg = event_data.get("message", "Unknown error")
-                yield f"data: {make_chunk({'content': f'[错误: {error_msg}]'}, 'error')}\n\n"
+                yield f"data: {make_chunk(KBChatDelta(content=f'[错误: {error_msg}]'), 'error')}\n\n"
                 yield "data: [DONE]\n\n"
                 
     except Exception as e:
         logger.error("流式对话失败: {}", str(e))
-        yield f"data: {make_chunk({'content': f'[错误: {str(e)}]'}, 'error')}\n\n"
+        # 对Pydantic验证错误提供更友好的错误信息
+        if "validation error" in str(e).lower():
+            error_msg = "数据校验失败，请检查请求参数"
+        else:
+            error_msg = str(e)
+        yield f"data: {make_chunk(KBChatDelta(content=f'[错误: {error_msg}]'), 'error')}\n\n"
         yield "data: [DONE]\n\n"

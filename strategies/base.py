@@ -34,8 +34,25 @@ class GenericChatStrategy(LLMStrategy):
 	def apply_chat_template(self, messages: List[Dict]) -> str:
 		parts = []
 		for m in messages:
-			role = m.get("role", "user")
+			role = m.get("role") or "user"
 			content = m.get("content", "")
 			parts.append(f"{role}: {content}")
 		parts.append("assistant:")
 		return "\n".join(parts)
+
+	def generate(self, engine, messages: List[Dict], stream: bool = False, **kwargs) -> Union[str, Iterator[str]]:
+		prompt = self.apply_chat_template(messages)
+		if kwargs.get("stop") is None:
+			kwargs["stop"] = [
+				"\nsystem:",
+				"\nuser:",
+				"\nassistant:",
+				"\nsystem：",
+				"\nuser：",
+				"\nassistant：",
+				"<|im_start|>system",
+				"<|im_start|>user",
+				"<|im_start|>assistant",
+				"<|im_end|>",
+			]
+		return engine.generate(prompt, stream=stream, **kwargs)

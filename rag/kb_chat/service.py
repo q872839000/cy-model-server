@@ -19,7 +19,7 @@ from rag.kb_chat.types import (
     KBChatResult,
 )
 from models import KBSourceReference, KBChatInfo
-from core.config import KBChatConfigManager, KBChatSettings
+from core.config import KBChatSettings, Config
 from rag.kb_chat.intent import IntentRouter
 from rag.kb_chat.rewriter import QueryRewriter
 from rag.kb_chat.prompt import PromptBuilder
@@ -55,7 +55,11 @@ class KBChatService:
         self._llm_fn = llm_fn
         self._llm_stream_fn = llm_stream_fn
         # 优先使用传入的配置，否则使用全局配置管理器
-        self._config = config if config is not None else KBChatConfigManager.get_config()
+        if config is not None:
+            self._config = config
+        else:
+            # 从配置直接获取知识库对话配置
+            self._config = Config.kb_chat
         
         # 创建简单的 LLM 调用函数（用于意图识别和改写）
         simple_llm_fn = self._create_simple_llm_fn()

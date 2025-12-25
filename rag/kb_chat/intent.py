@@ -217,9 +217,6 @@ class IntentRouter:
         判断是否为换话题
         
         检测模式：
-        - "那XXX呢？"
-        - "另外，XXX"
-        - "说说XXX"
         """
         # "那...呢" 模式
         if query.startswith("那") and "呢" in query and len(query) > 5:

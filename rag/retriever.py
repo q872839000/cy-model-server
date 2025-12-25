@@ -10,9 +10,10 @@
 """
 
 import time
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Any, Callable, Tuple, Union, Set
 from loguru import logger
+
+from core.config import Config, RetrieverConfig
 
 from models import (
     KBChunk,
@@ -23,7 +24,6 @@ from models import (
     ChunkPosition,
     ChunkOverlapInfo,
 )
-from storage.milvus.client import MilvusClient
 from storage.milvus.collections import KBCollectionManager
 
 # 延迟导入 pymilvus
@@ -35,27 +35,6 @@ except ImportError:
     pass
 
 
-@dataclass
-class RetrieverConfig:
-    """
-    检索器配置。
-    
-    Attributes:
-        default_top_k: 默认返回结果数量
-        dense_weight: 混合检索中稠密向量的权重
-        content_sparse_weight: 混合检索中内容稀疏向量的权重
-        title_sparse_weight: 混合检索中标题稀疏向量的权重
-        rrf_k: RRF 融合算法的 k 参数
-        use_rrf: 是否使用 RRF 融合（否则使用加权融合）
-        ef_search: HNSW 搜索时的 ef 参数
-    """
-    default_top_k: int = 10
-    dense_weight: float = 1.0
-    content_sparse_weight: float = 0.8
-    title_sparse_weight: float = 0.5
-    rrf_k: int = 60
-    use_rrf: bool = False
-    ef_search: int = 64
 
 
 class HybridRetriever:
@@ -67,13 +46,6 @@ class HybridRetriever:
     - Sparse: 基于 BM25 的关键词检索，适合精确匹配
     - Hybrid: 融合两种检索结果，兼顾语义理解和关键词匹配
     
-    Usage:
-        >>> retriever = HybridRetriever(embedding_fn=get_embedding)
-        >>> response = retriever.search(KBSearchRequest(
-        ...     query="如何配置网络",
-        ...     mode=SearchMode.HYBRID,
-        ...     top_k=10
-        ... ))
     """
     
     def __init__(
@@ -93,7 +65,8 @@ class HybridRetriever:
         """
         self._embedding_fn = embedding_fn
         self._collection_manager = collection_manager or KBCollectionManager()
-        self._config = config or RetrieverConfig()
+        # 使用统一配置系统而非硬编码默认值
+        self._config = config or Config.retriever
     
     @property
     def config(self) -> RetrieverConfig:

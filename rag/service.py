@@ -17,11 +17,11 @@ from models import (
     KBSearchRequest,
     KBSearchResponse,
     KBSearchHit,
-    SearchMode,
 )
 from storage.milvus.client import MilvusClient
 from storage.milvus.collections import KBCollectionManager
-from rag.retriever import HybridRetriever, RetrieverConfig
+from rag.retriever import HybridRetriever
+from core.config import RetrieverConfig
 
 
 class RAGService:
@@ -37,13 +37,6 @@ class RAGService:
     Attributes:
         retriever: 混合检索器
         reranker_fn: 重排序函数（可选）
-        
-    Usage:
-        >>> service = RAGService(
-        ...     embedding_fn=get_embedding,
-        ...     reranker_fn=rerank_documents
-        ... )
-        >>> response = service.search(KBSearchRequest(query="如何配置"))
     """
     
     def __init__(

@@ -6,13 +6,12 @@ from api.kb_chat_router import router as kb_chat_router
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from loguru import logger
 from prometheus_fastapi_instrumentator import Instrumentator
 import orjson
 import time
 
-from core.config import AppSettings, load_settings
+from core.config import AppSettings, Config, init_config
 from core.registry import REGISTRY
 from core.exceptions import ModelServerException
 from core.logging import setup_logging
@@ -62,10 +61,11 @@ async def lifespan(app: FastAPI):
 	- startup: 加载模型注册表、连接 Milvus
 	- shutdown: 清理资源、断开连接
 	"""
-	# Startup: 加载模型
-	settings = load_settings()
+	# Startup: 初始化配置系统
+	init_config()
+	settings = Config.app  # 直接属性访问应用配置
 	try:
-		REGISTRY.load_from_config(settings)
+		REGISTRY.load_from_config()
 		logger.info("模型注册表已加载（LLM:{} Emb:{} Rerank:{})",
 				REGISTRY.llm_count(), REGISTRY.embedding_count(), REGISTRY.reranker_count())
 	except Exception as e:
@@ -74,7 +74,9 @@ async def lifespan(app: FastAPI):
 	# Startup: 初始化 Milvus 连接
 	try:
 		from storage.milvus import init_milvus, shutdown_milvus
-		init_milvus()
+		milvus_available = init_milvus()
+		if not milvus_available:
+			logger.info("Milvus 服务不可用，RAG功能将受限")
 	except ImportError:
 		logger.info("Milvus 模块不可用，跳过初始化")
 		shutdown_milvus = None
@@ -101,20 +103,21 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 	- 挂载 API 路由（若存在）
 	- 注册健康检查与全局异常处理
 	"""
-	settings = settings or load_settings()
+	if settings is None:
+		# 如果未传入设置，直接从全局Config获取
+		settings = Config.app
 	setup_logging(level=settings.log_level, log_format=settings.log_format)
 
 	app = FastAPI(
 		title="CY Model Server",
 		version="1.0.0",
-		description="生产级大模型对话服务",
+		description="大模型对话服务",
 		default_response_class=ORJSONResponse,
 		docs_url="/docs" if settings.env == "dev" else None,
 		redoc_url="/redoc" if settings.env == "dev" else None,
 		lifespan=lifespan,
 	)
 
-	# 生产级中间件
 	_setup_middleware(app, settings)
 
 	# Prometheus 指标
@@ -157,13 +160,6 @@ def _setup_middleware(app: FastAPI, settings: AppSettings) -> None:
 		allow_methods=["*"],
 		allow_headers=["*"],
 	)
-
-	# 信任主机中间件（生产环境）
-	if settings.env == "prod":
-		app.add_middleware(
-			TrustedHostMiddleware,
-			allowed_hosts=["*"]  # 根据实际需求配置
-		)
 
 	# 请求日志中间件
 	@app.middleware("http")
@@ -239,7 +235,7 @@ app.include_router(kb_chat_router)
 
 
 if __name__ == "__main__":
-	settings = load_settings()
+	settings = Config.app
 	import uvicorn
 	# 直接传递 app 对象而非字符串，兼容 Nuitka 编译
 	uvicorn.run(app, host=settings.host, port=settings.port)

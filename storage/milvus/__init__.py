@@ -17,12 +17,13 @@ Milvus 存储模块
 from typing import Optional
 from loguru import logger
 
-from storage.milvus.config import MilvusConfig, init_configs_from_yaml
+from core.config import MilvusConfig, KBCollectionConfig
 from storage.milvus.client import MilvusClient
 from storage.milvus.collections import KBCollectionManager
 
 __all__ = [
     "MilvusConfig",
+    "KBCollectionConfig", 
     "MilvusClient",
     "KBCollectionManager",
     "init_milvus",
@@ -36,34 +37,27 @@ _milvus_client: Optional[MilvusClient] = None
 
 def init_milvus() -> bool:
     """
-    初始化 Milvus 连接。
+    初始化 Milvus 服务。
     
-    在服务启动时调用，建立与 Milvus 的连接。
+    应在应用启动时调用，使用全局配置系统加载配置，
+    然后建立连接。连接失败时不会导致程序崩溃，而是优雅处理。
     
     Returns:
-        bool: 连接是否成功
+        bool: 初始化是否成功
     """
     global _milvus_client
     
     try:
-        # 加载配置
-        init_configs_from_yaml()
-        
-        # 创建并连接
+        # 使用全局配置系统创建客户端
         _milvus_client = MilvusClient()
         _milvus_client.connect()
         
-        if _milvus_client.is_connected:
-            logger.info("Milvus 连接成功")
-            return True
-        else:
-            logger.warning("Milvus 连接失败，RAG 功能不可用")
-            return False
-    except ImportError:
-        logger.info("pymilvus 未安装，跳过 Milvus 初始化")
-        return False
+        logger.info("Milvus 服务初始化成功")
+        return True
+        
     except Exception as e:
-        logger.warning("Milvus 初始化失败: {}，RAG 功能不可用", str(e))
+        logger.warning("Milvus 服务初始化失败，RAG功能不可用: {}", str(e))
+        _milvus_client = None
         return False
 
 

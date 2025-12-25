@@ -129,7 +129,7 @@ def _get_kb_chat_service() -> KBChatService:
         rag_service=rag_service,
         llm_fn=llm_fn,
         llm_stream_fn=llm_stream_fn,
-        # config 参数为 None，服务内部会自动使用 KBChatConfigManager.get_config()
+        # config 参数为 None，服务内部会自动使用全局配置管理器
     )
     
     logger.info("知识库对话服务初始化完成")

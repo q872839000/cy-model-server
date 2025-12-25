@@ -58,6 +58,10 @@ from models.kb_schemas import (
     KBChatChunkChoice,
     KBChatChunkResponse,
 )
+from core.config import (
+    MilvusConfig,
+    KBCollectionConfig,
+)
 
 __all__ = [
     # Chat
@@ -96,6 +100,9 @@ __all__ = [
     "KBChatDelta",
     "KBChatChunkChoice",
     "KBChatChunkResponse",
+    # Milvus
+    "MilvusConfig",
+    "KBCollectionConfig",
     # Embedding
     "EmbeddingRequest",
     "EmbeddingData",

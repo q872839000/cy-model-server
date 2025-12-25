@@ -106,9 +106,8 @@ class ServiceContainer:
         
         try:
             # 从配置获取模型名称
-            from core.config import load_yaml
-            cfg = load_yaml("configs/config.yaml") or {}
-            kb_cfg = cfg.get("knowledge_base") or {}
+            from core.config import Config
+            kb_cfg = Config.get_yaml_section("knowledge_base") or {}
             
             embedding_model = kb_cfg.get("embedding_model")
             reranker_model = kb_cfg.get("reranker_model")

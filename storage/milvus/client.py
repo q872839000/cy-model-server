@@ -16,7 +16,7 @@ from typing import Optional, Dict, Any
 from threading import Lock
 from loguru import logger
 
-from storage.milvus.config import MilvusConfig, load_milvus_config
+from core.config import MilvusConfig
 
 # 延迟导入 pymilvus，避免未安装时启动失败
 _pymilvus_available = False
@@ -45,17 +45,6 @@ class MilvusClient:
     - 连接复用（单例模式）
     - 健康检查
     - 优雅断开
-    
-    Usage:
-        >>> client = MilvusClient()
-        >>> client.connect()
-        >>> if client.is_healthy():
-        ...     # 执行操作
-        >>> client.disconnect()
-    
-    或使用上下文管理器：
-        >>> with MilvusClient() as client:
-        ...     # 执行操作
     """
     
     _instance: Optional["MilvusClient"] = None
@@ -79,17 +68,22 @@ class MilvusClient:
                     cls._instance = instance
         return cls._instance
     
-    def __init__(self, config: Optional[MilvusConfig] = None) -> None:
+    def __init__(self, config: Optional["MilvusConfig"] = None):
         """
         初始化 Milvus 客户端。
         
         Args:
-            config: Milvus 配置，为 None 时从环境变量加载
+            config: Milvus 连接配置，为 None 时自动加载
         """
         if self._initialized:
             return
             
-        self._config = config or load_milvus_config()
+        if config is not None:
+            self._config = config
+        else:
+            # 从配置直接获取Milvus配置
+            from core.config import Config
+            self._config = Config.milvus
         self._alias = "default"
         self._connected = False
         self._initialized = True

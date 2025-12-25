@@ -10,7 +10,8 @@ RAG（检索增强生成）业务模块
 - models.kb_schemas: 知识库数据结构
 """
 
-from rag.retriever import HybridRetriever, RetrieverConfig
+from rag.retriever import HybridRetriever
+from core.config import RetrieverConfig
 from rag.service import RAGService
 
 __all__ = [

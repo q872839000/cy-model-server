@@ -46,7 +46,7 @@ def setup_logging(level: str = "INFO", log_format: Optional[str] = None) -> None
 		colorize=True
 	)
 	
-	# 生产环境文件输出
+	# 文件输出
 	if os.getenv('ENV', 'dev') == 'prod':
 		# 创建日志目录
 		log_dir = Path("logs")

@@ -14,7 +14,7 @@ from rag.kb_chat.types import (
     RewriteResult,
     KBChatResult,
 )
-from core.config import KBChatConfigManager, KBChatSettings
+from core.config import KBChatSettings
 from rag.kb_chat.intent import IntentRouter
 from rag.kb_chat.rewriter import QueryRewriter
 from rag.kb_chat.prompt import PromptBuilder, ModelFamily
@@ -28,7 +28,6 @@ __all__ = [
     "RewriteResult",
     "KBChatResult",
     # 配置管理
-    "KBChatConfigManager",
     "KBChatSettings",
     # 组件
     "IntentRouter",

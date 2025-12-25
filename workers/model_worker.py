@@ -128,9 +128,15 @@ class ModelWorker:
         strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
         strategy = CONTAINER.get_strategy(strategy_key)
         
-        # 合并模型特性参数到 kwargs
-        model_features = REGISTRY.get_llm_features(model_name)
-        merged_kwargs = {**model_features, **kwargs}
+        # 直接从Registry获取模型配置，避免重复查询配置系统
+        llm_config = REGISTRY.get_llm_config(model_name)
+        
+        # 构建业务参数
+        business_params = {}
+        if llm_config and llm_config.enable_thinking:
+            business_params["enable_thinking"] = llm_config.enable_thinking
+        
+        merged_kwargs = {**business_params, **kwargs}
 
         loop = asyncio.get_running_loop()
         try:
@@ -167,9 +173,15 @@ class ModelWorker:
         strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
         strategy = CONTAINER.get_strategy(strategy_key)
         
-        # 合并模型特性参数到 kwargs
-        model_features = REGISTRY.get_llm_features(model_name)
-        merged_kwargs = {**model_features, **kwargs}
+        # 直接从Registry获取模型配置，避免重复查询配置系统
+        llm_config = REGISTRY.get_llm_config(model_name)
+        
+        # 构建业务参数
+        business_params = {}
+        if llm_config and llm_config.enable_thinking:
+            business_params["enable_thinking"] = llm_config.enable_thinking
+        
+        merged_kwargs = {**business_params, **kwargs}
 
         try:
             loop = asyncio.get_running_loop()

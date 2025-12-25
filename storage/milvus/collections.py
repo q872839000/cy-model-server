@@ -14,9 +14,9 @@ Milvus Collection 管理模块
 from typing import Optional, List, Dict, Any
 from loguru import logger
 
-from storage.milvus.config import KBCollectionConfig, load_kb_collection_config
 from storage.milvus.client import MilvusClient, MilvusConnectionError
-from models import KBChunk, KBDocument
+from models import KBChunk
+from core.config import KBCollectionConfig
 
 # 延迟导入 pymilvus
 _pymilvus_available = False
@@ -59,27 +59,27 @@ class KBCollectionManager:
     Attributes:
         client: Milvus 客户端实例
         config: Collection 全局配置
-        
-    Usage:
-        >>> manager = KBCollectionManager()
-        >>> manager.create_collection("my_collection")
-        >>> manager.insert_chunks("my_collection", chunks, vectors)
     """
     
     def __init__(
-        self, 
+        self,
         client: Optional[MilvusClient] = None,
-        config: Optional[KBCollectionConfig] = None
-    ) -> None:
+        config: Optional["KBCollectionConfig"] = None,
+    ):
         """
         初始化 Collection 管理器。
         
         Args:
-            client: Milvus 客户端，为 None 时使用默认单例
-            config: Collection 配置，为 None 时从配置文件加载
+            client: Milvus 客户端，为 None 时自动创建
+            config: Collection 配置，为 None 时自动加载
         """
         self._client = client or MilvusClient()
-        self._config = config or load_kb_collection_config()
+        if config is not None:
+            self._config = config
+        else:
+            # 从配置直接获取Collection配置
+            from core.config import Config
+            self._config = Config.kb_collection
         # 缓存已加载的 Collection 实例
         self._collections: Dict[str, "Collection"] = {}
         

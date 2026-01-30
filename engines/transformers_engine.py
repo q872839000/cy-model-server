@@ -54,7 +54,7 @@ class TransformersLLMEngine(LLMEngine):
         model = AutoModelForCausalLM.from_pretrained(
             self.model_path,
             device_map='auto' if use_cuda else None,
-            torch_dtype=torch_dtype,
+            dtype=torch_dtype,
             trust_remote_code=True
         )
         

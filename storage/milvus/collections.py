@@ -519,7 +519,7 @@ class KBCollectionManager:
                 "overlap_prev": chunk.overlap.prev_chars,
                 "overlap_next": chunk.overlap.next_chars,
                 "dense_vector": dense_vectors[i],
-                "metadata": chunk.metadata,
+                "metadata": chunk.metadata or {},
                 "created_at": chunk.created_at,
             }
             for i, chunk in enumerate(chunks)

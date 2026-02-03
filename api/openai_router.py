@@ -34,46 +34,17 @@ from models import (
 )
 import uuid
 import time
-from functools import lru_cache
 
-from core.container import CONTAINER
-
-try:
-    from transformers import AutoTokenizer
-except Exception:
-    AutoTokenizer = None
+from core.services.chat_service import CHAT_SERVICE
 
 router = APIRouter()
-
-
-@lru_cache(maxsize=16)
-def _load_tokenizer(model_path: str):
-    """
-    缓存式加载tokenizer
-    
-    用于无法从已加载模型引擎获取tokenizer时的兜底方案
-    使用LRU缓存避免重复从磁盘加载同一个tokenizer
-    
-    参数:
-        model_path: 模型文件路径
-        
-    返回:
-        tokenizer实例或None（当transformers库不可用时）
-    """
-    # 兜底加载 tokenizer（用于无法从已加载引擎上拿到 tokenizer 的场景）
-    if AutoTokenizer is None:
-        return None
-    return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
 
 def _get_tokenizer_for_model(model_name: str):
     """
     获取指定模型的tokenizer实例
     
-    按优先级尝试以下方式获取tokenizer:
-    1. 从已加载的模型引擎中获取 (_tokenizer 属性)
-    2. 从引擎的fallback对象中获取
-    3. 根据模型路径重新加载
+    通过 CHAT_SERVICE 获取 tokenizer，遵循分层架构。
     
     参数:
         model_name: 模型名称
@@ -81,25 +52,7 @@ def _get_tokenizer_for_model(model_name: str):
     返回:
         tokenizer实例或None（获取失败时）
     """
-    # 优先复用已加载模型的 tokenizer，避免重复从磁盘加载
-    try:
-        engine, _ = CONTAINER.get_llm_and_strategy(model_name)
-        if engine is None:
-            return None
-        tok = getattr(engine, "_tokenizer", None)
-        if tok is not None:
-            return tok
-        fallback = getattr(engine, "_fallback", None)
-        if fallback is not None:
-            tok2 = getattr(fallback, "_tokenizer", None)
-            if tok2 is not None:
-                return tok2
-        model_path = getattr(engine, "model_path", None)
-        if model_path:
-            return _load_tokenizer(str(model_path))
-    except Exception:
-        return None
-    return None
+    return CHAT_SERVICE.get_tokenizer(model_name)
 
 
 def _count_tokens(tokenizer, text: str) -> int:
@@ -174,9 +127,8 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         cleaned_messages = clean_messages_for_history([m.model_dump() for m in req.messages])
         
         # 预先构造 prompt 并统计 prompt_tokens（流式/非流式共用，避免重复计算）
-        _, strategy = CONTAINER.get_llm_and_strategy(req.model)
         tokenizer = _get_tokenizer_for_model(req.model)
-        prompt = strategy.apply_chat_template(cleaned_messages) if strategy else ""
+        prompt = CHAT_SERVICE.build_prompt(req.model, cleaned_messages, req.enable_thinking)
         prompt_tokens = _count_tokens(tokenizer, prompt)
         if not req.stream:
             # 非流式：一次性返回

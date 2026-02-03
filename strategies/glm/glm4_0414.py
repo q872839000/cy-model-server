@@ -1,7 +1,8 @@
 """GLM4-0414 系列模型策略（支持深度思考）"""
 
-from typing import List, Dict, Iterator, Union
+from typing import List, Dict
 from strategies.glm.base import GLMBaseStrategy
+from strategies.protocol import StrategyInput, PromptOutput
 
 
 class GLM4_0414Strategy(GLMBaseStrategy):
@@ -11,50 +12,31 @@ class GLM4_0414Strategy(GLMBaseStrategy):
     通过在 prompt 中注入 <think> 标签来引导模型输出思考过程。
     """
 
-    def apply_chat_template(self, messages: List[Dict], enable_thinking: bool = True) -> str:
-        """
-        应用对话模板，可选启用深度思考模式。
-        """
-        prompt = super().apply_chat_template(messages)
+    def apply_chat_template(self, messages: List[Dict], **kwargs) -> str:
+        """应用对话模板，可选启用深度思考模式。"""
+        enable_thinking = kwargs.get("enable_thinking", True)
+        prompt = super().apply_chat_template(messages, **kwargs)
         if enable_thinking:
             prompt = prompt.rstrip("\n") + "\n<think>"
         return prompt
 
-    def generate(self, engine, messages: List[Dict], stream: bool = False, **kwargs) -> Union[str, Iterator[str]]:
+    def build_prompt(self, input: StrategyInput) -> PromptOutput:
         """
-        生成回复（支持深度思考模式）。
+        构建 Prompt，支持深度思考模式。
         
-        Args:
-            engine: LLM 引擎实例
-            messages: 消息列表
-            stream: 是否流式输出
-            **kwargs: 生成参数，enable_thinking 默认为 True
+        当 enable_thinking=True 时，设置 thinking_prefix 为 "<think>"，
+        由基类 execute() 统一处理前缀输出。
         """
-        enable_thinking = kwargs.pop("enable_thinking", True)
+        prompt = self.apply_chat_template(
+            input.messages,
+            enable_thinking=input.enable_thinking,
+            **input.extra
+        )
         
-        prompt = self.apply_chat_template(messages, enable_thinking=enable_thinking)
-
-        stop_words = ["<|user|>", "<|assistant|>", "<|system|>", "<|observation|>"]
-        kwargs.setdefault("stop", stop_words)
+        thinking_prefix = "<think>" if input.enable_thinking else None
         
-        if stream:
-            return self._generate_stream(engine, prompt, enable_thinking, **kwargs)
-            
-        output = engine.generate(prompt, stream=stream, **kwargs)
-        if enable_thinking:
-            if output.lstrip().startswith("<think>"):
-                return output
-            return "<think>" + output
-        return output
-
-    def _generate_stream(self, engine, prompt, enable_thinking, **kwargs):
-        first = True
-        for chunk in engine.generate(prompt, stream=True, **kwargs):
-            if first:
-                first = False
-                if enable_thinking:
-                    if chunk.lstrip().startswith("<think>"):
-                        yield chunk
-                        continue
-                    yield "<think>"
-            yield chunk
+        return PromptOutput(
+            prompt=prompt,
+            thinking_prefix=thinking_prefix,
+            stop_words=input.stop or self.get_default_stop_words(),
+        )

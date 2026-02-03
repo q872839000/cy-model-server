@@ -30,7 +30,6 @@ from core.exceptions import ModelServerException
 from rag.kb_chat import KBChatService
 from utils.message_filter import clean_messages_for_history
 from core.container import CONTAINER
-from workers.model_worker import WORKER
 
 
 router = APIRouter(prefix="/v1/kb", tags=["Knowledge Base Chat"])
@@ -38,102 +37,26 @@ router = APIRouter(prefix="/v1/kb", tags=["Knowledge Base Chat"])
 
 # ==================== 服务获取 ====================
 
-# 缓存的 KBChatService 实例
-_kb_chat_service: Optional[KBChatService] = None
-
 
 def _get_kb_chat_service() -> KBChatService:
     """
     获取知识库对话服务实例
     
-    使用全局缓存避免重复初始化服务。如果RAG服务不可用，
-    则抛出HTTP 503错误。
+    通过 CONTAINER 统一管理服务生命周期。
     
     返回:
         KBChatService: 知识库对话服务实例
         
     异常:
-        HTTPException: 当RAG服务不可用时抛出503错误
+        HTTPException: 当服务不可用时抛出503错误
     """
-    global _kb_chat_service
-    
-    if _kb_chat_service is not None:
-        return _kb_chat_service
-    
-    # 获取 RAG 服务
-    rag_service = CONTAINER.get_rag_service()
-    if rag_service is None:
+    service = CONTAINER.get_kb_chat_service()
+    if service is None:
         raise HTTPException(
             status_code=503,
-            detail="RAG服务不可用，请检查Milvus连接和配置"
+            detail="知识库对话服务不可用，请检查Milvus连接和配置"
         )
-    
-    # 创建 LLM 调用函数
-    async def llm_fn(model: str, messages: List[dict], max_tokens: int, temperature: float, top_p: float = 0.95, enable_thinking: bool = True, **kwargs) -> str:
-        """
-        非流式LLM调用函数
-        
-        封装WORKER.generate_chat为知识库对话服务提供统一的LLM接口
-        
-        参数:
-            model: 模型名称
-            messages: 对话消息列表
-            max_tokens: 最大生成token数
-            temperature: 生成温度
-            top_p: 核采样参数
-            enable_thinking: 是否启用深度思考模式
-            
-        返回:
-            生成的文本内容
-        """
-        return await WORKER.generate_chat(
-            model_name=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stream=False,
-            enable_thinking=enable_thinking,
-        )
-    
-    async def llm_stream_fn(model: str, messages: List[dict], max_tokens: int, temperature: float, top_p: float = 0.95, enable_thinking: bool = True, **kwargs):
-        """
-        流式LLM调用函数
-        
-        封装WORKER.generate_chat的流式调用为知识库对话服务提供统一接口
-        
-        参数:
-            model: 模型名称
-            messages: 对话消息列表
-            max_tokens: 最大生成token数
-            temperature: 生成温度
-            top_p: 核采样参数
-            enable_thinking: 是否启用深度思考模式
-            
-        生成:
-            文本块迭代器
-        """
-        async for chunk in WORKER.generate_chat(
-            model_name=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stream=True,
-            enable_thinking=enable_thinking,
-        ):
-            yield chunk
-    
-    # 创建服务（使用全局配置管理器）
-    _kb_chat_service = KBChatService(
-        rag_service=rag_service,
-        llm_fn=llm_fn,
-        llm_stream_fn=llm_stream_fn,
-        # config 参数为 None，服务内部会自动使用全局配置管理器
-    )
-    
-    logger.info("知识库对话服务初始化完成")
-    return _kb_chat_service
+    return service
 
 
 # ==================== API 端点 ====================

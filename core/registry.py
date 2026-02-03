@@ -139,6 +139,31 @@ class ModelRegistry:
 		"""返回已加载的Reranker模型数量。"""
 		return len(self._rerankers)
 
+	# === 公开的列表方法 ===
+	def list_llm_names(self) -> list[str]:
+		"""返回所有已加载的LLM模型名称列表。"""
+		return list(self._llms.keys())
+
+	def list_embedding_names(self) -> list[str]:
+		"""返回所有已加载的Embedding模型名称列表。"""
+		return list(self._embeddings.keys())
+
+	def list_reranker_names(self) -> list[str]:
+		"""返回所有已加载的Reranker模型名称列表。"""
+		return list(self._rerankers.keys())
+
+	def get_default_llm_name(self) -> Optional[str]:
+		"""返回默认LLM模型名称。"""
+		return self._default_llm
+
+	def get_default_embedding_name(self) -> Optional[str]:
+		"""返回默认Embedding模型名称。"""
+		return self._default_embedding
+
+	def get_default_reranker_name(self) -> Optional[str]:
+		"""返回默认Reranker模型名称。"""
+		return self._default_reranker
+
 	def clear(self) -> None:
 		"""清空所有模型。"""
 		# 清空注册表（让Python GC自然回收模型对象）

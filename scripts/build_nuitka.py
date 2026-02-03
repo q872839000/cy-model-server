@@ -256,15 +256,18 @@ def build(onefile: bool = False):
         "--include-package=regex",
         
         # 包含数据文件（transformers 需要）
+        # 注意：torch 的 .so 文件由 Nuitka DLL 检测器自动处理，不要用 --include-package-data=torch，否则会冲突
         "--include-package-data=transformers",
         "--include-package-data=tokenizers",
         "--include-package-data=sentencepiece",
-        "--include-package-data=torch",
         "--include-package-data=pymilvus",
         "--include-package-data=grpc",
         "--include-package-data=google.protobuf",
         
         # 注意：numpy 和 torch 插件在 Nuitka 2.x 已弃用，无需显式启用
+        
+        # 排除 transformers CLI 工具模块（Nuitka 插件改写时会触发 SyntaxError）
+        "--nofollow-import-to=transformers.commands",
         
         # 优化选项
         "--assume-yes-for-downloads",        # 自动下载依赖

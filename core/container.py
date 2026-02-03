@@ -30,6 +30,7 @@ class ServiceContainer:
         """初始化服务容器"""
         self._rag_service: Optional["RAGService"] = None
         self._rag_initialized: bool = False
+        self._kb_chat_service: Optional["KBChatService"] = None
 
     def get_strategy(self, strategy_key: Optional[str]) -> LLMStrategy:
         """
@@ -161,6 +162,86 @@ class ServiceContainer:
             
         except Exception as e:
             logger.warning("RAG 服务初始化失败: {}", str(e))
+            return None
+
+    # ==================== 知识库对话服务 ====================
+    
+    def get_kb_chat_service(self) -> Optional["KBChatService"]:
+        """
+        获取知识库对话服务实例。
+        
+        首次调用时自动初始化。依赖 RAG 服务和 WORKER。
+        
+        Returns:
+            Optional[KBChatService]: 知识库对话服务实例
+        """
+        if self._kb_chat_service is not None:
+            return self._kb_chat_service
+        
+        # 获取 RAG 服务
+        rag_service = self.get_rag_service()
+        if rag_service is None:
+            logger.warning("RAG 服务不可用，知识库对话服务无法初始化")
+            return None
+        
+        try:
+            from rag.kb_chat import KBChatService
+            from workers.model_worker import WORKER
+            
+            # 创建 LLM 调用函数
+            async def llm_fn(
+                model: str,
+                messages: List[dict],
+                max_tokens: int,
+                temperature: float,
+                top_p: float = 0.95,
+                enable_thinking: bool = True,
+                **kwargs
+            ) -> str:
+                """非流式 LLM 调用函数"""
+                return await WORKER.generate_chat(
+                    model_name=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stream=False,
+                    enable_thinking=enable_thinking,
+                )
+            
+            async def llm_stream_fn(
+                model: str,
+                messages: List[dict],
+                max_tokens: int,
+                temperature: float,
+                top_p: float = 0.95,
+                enable_thinking: bool = True,
+                **kwargs
+            ):
+                """流式 LLM 调用函数"""
+                async for chunk in WORKER.generate_chat(
+                    model_name=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stream=True,
+                    enable_thinking=enable_thinking,
+                ):
+                    yield chunk
+            
+            # 创建服务
+            self._kb_chat_service = KBChatService(
+                rag_service=rag_service,
+                llm_fn=llm_fn,
+                llm_stream_fn=llm_stream_fn,
+            )
+            
+            logger.info("知识库对话服务初始化完成")
+            return self._kb_chat_service
+            
+        except Exception as e:
+            logger.warning("知识库对话服务初始化失败: {}", str(e))
             return None
 
 

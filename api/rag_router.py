@@ -16,6 +16,7 @@ from models import (
     SearchResponse,
 )
 from core.container import CONTAINER
+from workers.async_worker import ASYNC_WORKER
 
 router = APIRouter(prefix="/v1/kb", tags=["Knowledge Base"])
 
@@ -70,8 +71,8 @@ async def search(request: SearchRequest):
             score_threshold=request.score_threshold,
         )
         
-        # 执行检索
-        response = rag_service.search(search_request)
+        # 执行检索（使用 ASYNC_WORKER 包装同步调用）
+        response = await ASYNC_WORKER.run(rag_service.search, search_request)
         
         # 转换响应
         hits = [

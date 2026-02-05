@@ -62,6 +62,17 @@ from core.config import (
     MilvusConfig,
     KBCollectionConfig,
 )
+from models.scenario_schemas import (
+    ScenarioRequest,
+    ScenarioResponse,
+    EquipmentInfo,
+    EquipmentListResponse,
+    EquipmentPort,
+    EquipmentSchema,
+    EquipmentInstance,
+    ValidationError,
+    ValidationResult,
+)
 
 __all__ = [
     # Chat
@@ -111,4 +122,14 @@ __all__ = [
     "RerankRequest",
     "RerankItem",
     "RerankResponse",
+    # Scenario
+    "ScenarioRequest",
+    "ScenarioResponse",
+    "EquipmentInfo",
+    "EquipmentListResponse",
+    "EquipmentPort",
+    "EquipmentSchema",
+    "EquipmentInstance",
+    "ValidationError",
+    "ValidationResult",
 ]

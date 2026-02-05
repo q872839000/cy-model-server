@@ -24,6 +24,7 @@ class ServiceContainer:
     1. 通过策略工厂获取 LLM 策略实例
     2. 提供 Embedding/Reranker 引擎获取
     3. 提供 RAG 服务（延迟初始化）
+    4. 提供想定生成服务（延迟初始化）
     """
 
     def __init__(self) -> None:
@@ -31,6 +32,7 @@ class ServiceContainer:
         self._rag_service: Optional["RAGService"] = None
         self._rag_initialized: bool = False
         self._kb_chat_service: Optional["KBChatService"] = None
+        self._scenario_service: Optional["ScenarioService"] = None
 
     def get_strategy(self, strategy_key: Optional[str]) -> LLMStrategy:
         """
@@ -242,6 +244,41 @@ class ServiceContainer:
             
         except Exception as e:
             logger.warning("知识库对话服务初始化失败: {}", str(e))
+            return None
+
+
+    # ==================== 想定生成服务 ====================
+
+    def get_scenario_service(self) -> Optional["ScenarioService"]:
+        """
+        获取想定生成服务实例。
+
+        首次调用时自动初始化。依赖 ChatService。
+        装备库通过外部API获取，不再本地加载。
+
+        Returns:
+            Optional[ScenarioService]: 想定生成服务实例
+        """
+        if self._scenario_service is not None:
+            return self._scenario_service
+
+        try:
+            from core.services.chat_service import ChatService
+            from scenario.services import ScenarioService
+
+            # 创建 ChatService
+            chat_service = ChatService()
+
+            # 创建 ScenarioService（无需装备库，通过外部API获取）
+            self._scenario_service = ScenarioService(
+                chat_service=chat_service,
+            )
+
+            logger.info("想定生成服务初始化完成（装备库通过外部API获取）")
+            return self._scenario_service
+
+        except Exception as e:
+            logger.warning("想定生成服务初始化失败: {}", str(e))
             return None
 
 

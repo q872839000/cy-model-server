@@ -1,19 +1,22 @@
-fastapi>=0.110.0
-uvicorn>=0.24.0
-loguru>=0.7.0
-orjson>=3.9.0
+accelerate>=1.10.1
+fastapi>=0.112.2
+uvicorn>=0.30.6
+loguru>=0.7.2
+orjson>=3.11.5
 prometheus-fastapi-instrumentator>=6.1.0
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-PyYAML>=6.0
+pydantic>=2.9.2
+pydantic-settings>=2.6.1
+PyYAML>=6.0.2
 
 # Model runtime
-torch
-transformers>=4.36.0
-sentence-transformers>=2.2.2
+transformers>=5.0.0rc0
+sentence-transformers>=3.3.1
 
 # RAG / Vector DB (optional: only needed if you use Milvus-backed RAG endpoints)
-pymilvus>=2.5.0
+pymilvus>=2.6.5
+
+# HTTP client for external API calls
+httpx>=0.27.0
 
 # Optional (Linux only; Windows is not supported by vLLM)
 # vllm

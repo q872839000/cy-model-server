@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from api.openai_router import router as openai_router
 from api.rag_router import router as rag_router
 from api.kb_chat_router import router as kb_chat_router
+from api.scenario_router import router as scenario_router
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,14 +73,22 @@ async def lifespan(app: FastAPI):
 		logger.error("加载模型配置失败: {}", e)
 
 	# Startup: 初始化 Milvus 连接
+	# try:
+	# 	from storage.milvus import init_milvus, shutdown_milvus
+	# 	milvus_available = init_milvus()
+	# 	if not milvus_available:
+	# 		logger.info("Milvus 服务不可用，RAG功能将受限")
+	# except ImportError:
+	# 	logger.info("Milvus 模块不可用，跳过初始化")
+	# 	shutdown_milvus = None
+
+	# Startup: 加载提示词
 	try:
-		from storage.milvus import init_milvus, shutdown_milvus
-		milvus_available = init_milvus()
-		if not milvus_available:
-			logger.info("Milvus 服务不可用，RAG功能将受限")
-	except ImportError:
-		logger.info("Milvus 模块不可用，跳过初始化")
-		shutdown_milvus = None
+		from prompts import load_prompts
+		prompt_count = load_prompts()
+		logger.info("提示词加载完成，共 {} 个", prompt_count)
+	except Exception as e:
+		logger.warning("提示词加载失败: {}", e)
 
 	# 启动完成标识
 	_print_startup_banner(settings)
@@ -88,8 +97,8 @@ async def lifespan(app: FastAPI):
 
 	# Shutdown: 清理资源
 	logger.info("服务关闭，清理资源...")
-	if shutdown_milvus:
-		shutdown_milvus()
+	# if shutdown_milvus:
+	# 	shutdown_milvus()
 	REGISTRY.clear()
 
 
@@ -231,6 +240,7 @@ app = create_app()
 app.include_router(openai_router)
 app.include_router(rag_router)
 app.include_router(kb_chat_router)
+app.include_router(scenario_router)
 
 
 

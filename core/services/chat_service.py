@@ -294,5 +294,279 @@ class ChatService:
             raise InferenceError(model_name or "default", str(e))
 
 
+    async def generate_with_tools(
+        self,
+        model_name: Optional[str],
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto",
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        stop: Optional[List[str]] = None,
+        enable_thinking: Optional[bool] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        异步生成对话回复，支持Function Calling
+
+        Args:
+            model_name: 模型名称
+            messages: 消息列表
+            tools: Tool定义列表（OpenAI格式）
+            tool_choice: Tool选择策略 ("auto" | "none" | "required")
+            max_tokens: 最大生成token数
+            temperature: 生成温度
+            top_p: 核采样参数
+            stop: 停止词列表
+            enable_thinking: 是否启用深度思考
+            timeout: 超时时间（秒）
+            **kwargs: 其他参数
+
+        Returns:
+            {
+                "content": str,           # 文本回复
+                "tool_calls": [           # Tool调用列表（可能为空）
+                    {
+                        "id": str,
+                        "function": {
+                            "name": str,
+                            "arguments": str  # JSON字符串
+                        }
+                    }
+                ]
+            }
+        """
+        import json
+        import re
+
+        # 如果没有tools，直接调用普通generate
+        if not tools:
+            text = await self.generate(
+                model_name=model_name,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+                enable_thinking=enable_thinking,
+                timeout=timeout,
+                **kwargs,
+            )
+            return {"content": text, "tool_calls": []}
+
+        # 构建带Tool的System Prompt
+        tools_prompt = self._build_tools_prompt(tools)
+
+        # 在消息开头注入Tool说明
+        enhanced_messages = [
+            {
+                "role": "system",
+                "content": tools_prompt,
+            }
+        ] + messages
+
+        # 调用LLM
+        text = await self.generate(
+            model_name=model_name,
+            messages=enhanced_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop,
+            enable_thinking=enable_thinking,
+            timeout=timeout,
+            **kwargs,
+        )
+        print(type(text))
+        print(repr(text)[:300])
+        print(str(text))
+        # 解析Tool调用
+        tool_calls = self._parse_tool_calls(text)
+
+        # 如果有tool调用，content为空；否则返回原文
+        if tool_calls:
+            return {"content": "", "tool_calls": tool_calls}
+        else:
+            return {"content": text, "tool_calls": []}
+
+    def _build_tools_prompt(self, tools: List[Dict[str, Any]]) -> str:
+        """构建Tool说明Prompt"""
+        import json
+
+        lines = [
+            "你可以使用以下工具来完成任务。当需要使用工具时，请严格按照以下JSON格式输出：",
+            "",
+            '{"tool_call": {"name": "工具名称", "arguments": {参数对象}}}',
+            "",
+            "可用工具列表：",
+            "",
+        ]
+
+        for tool in tools:
+            func = tool.get("function", {})
+            name = func.get("name", "")
+            desc = func.get("description", "")
+            params = func.get("parameters", {})
+
+            lines.append(f"### {name}")
+            lines.append(f"描述: {desc}")
+
+            # 提取参数说明
+            props = params.get("properties", {})
+            required = params.get("required", [])
+
+            if props:
+                lines.append("参数:")
+                for pname, pinfo in props.items():
+                    ptype = pinfo.get("type", "any")
+                    pdesc = pinfo.get("description", "")
+                    req_mark = "(必填)" if pname in required else "(可选)"
+                    lines.append(f"  - {pname}: {ptype} {req_mark} - {pdesc}")
+
+            lines.append("")
+
+        lines.append("注意：")
+        lines.append("1. 每次只能调用一个工具")
+        lines.append("2. 工具调用必须使用上述JSON格式")
+        lines.append("3. 如果不需要使用工具，直接用自然语言回复")
+
+        return "\n".join(lines)
+
+    def _parse_tool_calls(self, text: str) -> List[Dict[str, Any]]:
+        """从LLM输出中解析Tool调用"""
+        import json
+        import re
+        import uuid
+        from loguru import logger
+
+        tool_calls = []
+        
+        # 预处理：移除代码块标记、控制字符和多余空白
+        clean_text = text.strip()
+        # 移除不可见控制字符（保留换行和空格）
+        clean_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', clean_text)
+        # 移除开头的 ```json 或 ```
+        clean_text = re.sub(r'^```(?:json)?\s*', '', clean_text)
+        # 移除结尾的 ``` (可能有换行)
+        clean_text = re.sub(r'\s*```\s*$', '', clean_text)
+        clean_text = clean_text.strip()
+        
+        logger.debug("【Tool解析】 原始长度={}, 清理后长度={}", len(text), len(clean_text))
+
+        # 方法1: 直接尝试解析整个文本作为JSON
+        try:
+            data = json.loads(clean_text)
+            if "tool_call" in data:
+                tc = data["tool_call"]
+                tool_calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "function": {
+                        "name": tc.get("name", ""),
+                        "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
+                    }
+                })
+                logger.info("【Tool解析】 方法1成功: {}", tc.get("name"))
+                return tool_calls
+        except json.JSONDecodeError as e:
+            logger.debug("【Tool解析】 方法1失败: {}", str(e))
+
+        # 方法2: 使用栈匹配找到完整的 JSON 对象
+        def find_json_object(s: str, start: int = 0) -> str:
+            """使用栈匹配找到从 start 开始的完整 JSON 对象"""
+            idx = s.find('{', start)
+            if idx == -1:
+                return ""
+            
+            stack = []
+            in_string = False
+            escape = False
+            
+            for i in range(idx, len(s)):
+                c = s[i]
+                if escape:
+                    escape = False
+                    continue
+                if c == '\\' and in_string:
+                    escape = True
+                    continue
+                if c == '"' and not escape:
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if c == '{':
+                    stack.append(c)
+                elif c == '}':
+                    stack.pop()
+                    if not stack:
+                        return s[idx:i+1]
+            return ""
+        
+        # 查找所有包含 "tool_call" 的 JSON 对象（支持多个）
+        search_pos = 0
+        while True:
+            tool_call_pos = clean_text.find('"tool_call"', search_pos)
+            if tool_call_pos == -1:
+                break
+            
+            # 向前找到 { 的位置
+            start_pos = clean_text.rfind('{', search_pos, tool_call_pos)
+            if start_pos != -1:
+                json_str = find_json_object(clean_text, start_pos)
+                if json_str:
+                    try:
+                        data = json.loads(json_str)
+                        if "tool_call" in data:
+                            tc = data["tool_call"]
+                            tool_calls.append({
+                                "id": f"call_{uuid.uuid4().hex[:8]}",
+                                "function": {
+                                    "name": tc.get("name", ""),
+                                    "arguments": json.dumps(tc.get("arguments", {}), ensure_ascii=False),
+                                }
+                            })
+                            logger.info("【Tool解析】 方法2(栈匹配)成功: {}", tc.get("name"))
+                            # 移动搜索位置到当前 JSON 之后
+                            search_pos = start_pos + len(json_str)
+                            continue
+                    except json.JSONDecodeError as e:
+                        logger.debug("【Tool解析】 方法2失败: {} | JSON片段: {}...", str(e), json_str[:100])
+            
+            # 移动搜索位置
+            search_pos = tool_call_pos + 1
+        
+        if tool_calls:
+            return tool_calls
+
+        # 方法3: 正则提取 tool_call 的 name 和 arguments
+        # 支持嵌套的 arguments
+        pattern = r'"tool_call"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*'
+        match = re.search(pattern, text)
+        if match:
+            name = match.group(1)
+            # 从 arguments 开始提取 JSON
+            args_start = match.end()
+            args_json = find_json_object(text, args_start)
+            if args_json:
+                try:
+                    args = json.loads(args_json)
+                    tool_calls.append({
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        }
+                    })
+                    logger.info("【Tool解析】 方法3(正则+栈)成功: {}", name)
+                    return tool_calls
+                except json.JSONDecodeError as e:
+                    logger.debug("【Tool解析】 方法3失败: {}", str(e))
+
+        logger.warning("【Tool解析】 所有方法均失败，原文: {}", text[:300])
+        return tool_calls
+
+
 # 全局服务实例
 CHAT_SERVICE = ChatService()

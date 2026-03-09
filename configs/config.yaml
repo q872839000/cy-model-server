@@ -2,7 +2,7 @@
 app:
   host: 0.0.0.0
   port: 8000
-  log_level: INFO
+  log_level: DEBUG
   log_format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
   # 生产环境配置
   workers: 1  # 模型服务建议单worker，避免内存重复加载
@@ -31,21 +31,24 @@ llms:
   - name: Qwen3-1___7B
     path: E:\\Ai\\models\\Qwen\\Qwen3-1___7B
     chat_strategy: qwen3           # 使用 Qwen3 策略，支持 enable_thinking 参数
-#    enable_thinking: false
-    gen_params:
-      max_tokens: 512
-      temperature: 0.7
-      top_p: 0.95
+    enable_thinking: false
+#    gen_params:
+#      max_tokens: 512
+#      temperature: 0.7
+#      top_p: 0.95
+#  - name: Qwen2
+#    path: E:\\Ai\\models\\Qwen\\Qwen2-0___5B-Instruct
+#    chat_strategy: Qwen2           # 使用 Qwen3 策略，支持 enable_thinking 参数
 
-# Embedding 模型列表
-embeddings:
-  - name: bge-large-zh
-    path: E:\\Ai\\models\\BAAI\\bge-large-zh
-
-# Reranker 模型列表
-rerankers:
-  - name: bge-reranker-base
-    path: E:\\Ai\\models\\BAAI\\bge-reranker-base
+## Embedding 模型列表
+#embeddings:
+#  - name: bge-large-zh
+#    path: E:\\Ai\\models\\BAAI\\bge-large-zh
+#
+## Reranker 模型列表
+#rerankers:
+#  - name: bge-reranker-base
+#    path: E:\\Ai\\models\\BAAI\\bge-reranker-base
 
 # ==================== RAG / 知识库配置 ====================
 # Milvus 向量数据库连接配置
@@ -80,3 +83,24 @@ knowledge_base:
   # 使用的模型（引用上面定义的模型名称）
   embedding_model: bge-large-zh
   reranker_model: bge-reranker-base
+
+# ==================== 想定生成配置 ====================
+scenario:
+  # LLM配置
+  llm:
+    temperature: 0.7
+    max_tokens: 2048
+  
+  # 外部API配置（仿真系统接口）
+  external_api:
+    base_url: http://localhost:8080/api
+    equipment_endpoint: /equipment
+    schema_endpoint: /equipment/{equipId}/schema
+    validation_endpoint: /scenario/validate
+    geo_endpoint: /geo/resolve
+    timeout: 30
+  
+  # 记忆管理配置
+  memory:
+    ttl_seconds: 1800  # 30分钟
+    cleanup_interval: 300  # 5分钟

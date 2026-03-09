@@ -10,12 +10,21 @@
 """
 
 from models.chat_schemas import (
+    ChatContentBlock,
+    ToolCallFunction,
+    ToolCall,
+    FunctionCall,
     ChatMessage,
-    ChatCompletionRequest,
     ChatCompletionStreamOptions,
+    ResponseFormat,
+    ChatCompletionRequest,
+    CompletionTokensDetails,
+    PromptTokensDetails,
     ChatCompletionUsage,
     ChatCompletionChoice,
     ChatCompletionResponse,
+    ToolCallChunkFunction,
+    ToolCallChunk,
     ChatCompletionDelta,
     ChatCompletionChunkChoice,
     ChatCompletionChunkResponse,
@@ -25,6 +34,7 @@ from models.chat_schemas import (
 from models.embedding_schemas import (
     EmbeddingRequest,
     EmbeddingData,
+    EmbeddingUsage,
     EmbeddingResponse,
 )
 from models.rerank_schemas import (
@@ -64,16 +74,30 @@ from core.config import (
 )
 
 __all__ = [
-    # Chat
+    # Chat - 内容块与工具调用
+    "ChatContentBlock",
+    "ToolCallFunction",
+    "ToolCall",
+    "FunctionCall",
+    # Chat - 消息与请求
     "ChatMessage",
     "ChatCompletionRequest",
     "ChatCompletionStreamOptions",
+    "ResponseFormat",
+    # Chat - Usage
+    "CompletionTokensDetails",
+    "PromptTokensDetails",
     "ChatCompletionUsage",
+    # Chat - 非流式响应
     "ChatCompletionChoice",
     "ChatCompletionResponse",
+    # Chat - 流式响应
+    "ToolCallChunkFunction",
+    "ToolCallChunk",
     "ChatCompletionDelta",
     "ChatCompletionChunkChoice",
     "ChatCompletionChunkResponse",
+    # Chat - 模型列表
     "ModelInfo",
     "ModelListResponse",
     # KB - 核心数据结构
@@ -106,6 +130,7 @@ __all__ = [
     # Embedding
     "EmbeddingRequest",
     "EmbeddingData",
+    "EmbeddingUsage",
     "EmbeddingResponse",
     # Rerank
     "RerankRequest",

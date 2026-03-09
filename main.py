@@ -4,6 +4,7 @@ from api.openai_router import router as openai_router
 from api.rag_router import router as rag_router
 from api.kb_chat_router import router as kb_chat_router
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
@@ -182,32 +183,100 @@ def _setup_middleware(app: FastAPI, settings: AppSettings) -> None:
 def _setup_exception_handlers(app: FastAPI) -> None:
 	"""设置异常处理器"""
 
-	@app.exception_handler(ModelServerException)
-	async def model_server_exception_handler(request: Request, exc: ModelServerException):
-		logger.error("Model server error: {} - {}", exc.error_code, exc.message)
+	@app.exception_handler(RequestValidationError)
+	async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+		try:
+			raw_body = await request.body()
+			if raw_body:
+				logger.warning(
+					"422 validation error on {} {}: body={} errors={}",
+					request.method,
+					request.url.path,
+					raw_body.decode("utf-8", errors="replace"),
+					exc.errors(),
+				)
+			else:
+				logger.warning(
+					"422 validation error on {} {}: empty body errors={}",
+					request.method,
+					request.url.path,
+					exc.errors(),
+				)
+		except Exception as log_err:
+			logger.warning(
+				"422 validation error on {} {} (failed to read body: {}) errors={}",
+				request.method,
+				request.url.path,
+				str(log_err),
+				exc.errors(),
+			)
+
+		# OpenAI 兼容错误格式：拼接可读的验证错误信息
+		error_messages = []
+		for err in exc.errors():
+			loc = " -> ".join(str(l) for l in err.get("loc", []))
+			msg = err.get("msg", "")
+			error_messages.append(f"{loc}: {msg}" if loc else msg)
 		return ORJSONResponse(
 			{
 				"error": {
-					"code": exc.error_code,
-					"message": exc.message,
-					"details": exc.details
+					"message": "; ".join(error_messages) or "Invalid request parameters",
+					"type": "invalid_request_error",
+					"param": None,
+					"code": None,
 				}
 			},
-			status_code=400
+			status_code=422,
+		)
+
+	@app.exception_handler(ModelServerException)
+	async def model_server_exception_handler(request: Request, exc: ModelServerException):
+		logger.error("Model server error: {} - {}", exc.error_code, exc.message)
+		# 根据错误类型推断 HTTP 状态码
+		status_map = {
+			"MODEL_NOT_FOUND": 404,
+			"CONFIGURATION_ERROR": 400,
+			"RESOURCE_LIMIT_ERROR": 429,
+		}
+		status_code = status_map.get(exc.error_code, 400)
+		return ORJSONResponse(
+			{
+				"error": {
+					"message": exc.message,
+					"type": "invalid_request_error" if status_code < 500 else "server_error",
+					"param": None,
+					"code": exc.error_code,
+				}
+			},
+			status_code=status_code,
 		)
 
 	@app.exception_handler(HTTPException)
 	async def http_exception_handler(request: Request, exc: HTTPException):
 		logger.warning("HTTP error: {} - {}", exc.status_code, exc.detail)
+		# 根据状态码推断 OpenAI 规范的 error type
+		if exc.status_code == 401:
+			error_type = "authentication_error"
+		elif exc.status_code == 403:
+			error_type = "permission_error"
+		elif exc.status_code == 404:
+			error_type = "not_found_error"
+		elif exc.status_code == 429:
+			error_type = "rate_limit_error"
+		elif exc.status_code >= 500:
+			error_type = "server_error"
+		else:
+			error_type = "invalid_request_error"
 		return ORJSONResponse(
 			{
 				"error": {
-					"code": "HTTP_ERROR",
 					"message": exc.detail,
-					"status_code": exc.status_code
+					"type": error_type,
+					"param": None,
+					"code": None,
 				}
 			},
-			status_code=exc.status_code
+			status_code=exc.status_code,
 		)
 
 	@app.exception_handler(Exception)
@@ -216,11 +285,13 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 		return ORJSONResponse(
 			{
 				"error": {
-					"code": "INTERNAL_ERROR",
-					"message": "内部服务器错误"
+					"message": "Internal server error",
+					"type": "server_error",
+					"param": None,
+					"code": None,
 				}
 			},
-			status_code=500
+			status_code=500,
 		)
 
 

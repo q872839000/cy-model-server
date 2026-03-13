@@ -29,6 +29,7 @@ from models import (
 from core.exceptions import ModelServerException
 from rag.kb_chat import KBChatService
 from utils.message_filter import clean_messages_for_history
+from utils.thinking_parser import parse_thinking_content, ThinkingStreamSplitter
 from core.container import CONTAINER
 
 
@@ -118,6 +119,9 @@ async def kb_chat_completions(request: KBChatRequest) -> KBChatResponse | Stream
                 enable_thinking=request.enable_thinking,
             )
             
+            # 拆分 <think> 标签：reasoning_content 和 content 分离
+            reasoning_content, content = parse_thinking_content(result.content)
+
             # 构建响应
             return KBChatResponse(
                 id=f"kbchat-{uuid.uuid4().hex[:8]}",
@@ -125,7 +129,10 @@ async def kb_chat_completions(request: KBChatRequest) -> KBChatResponse | Stream
                 model=request.model,
                 choices=[
                     KBChatChoice(
-                        message=KBChatMessageResponse(content=result.content)
+                        message=KBChatMessageResponse(
+                            content=content,
+                            reasoning_content=reasoning_content,
+                        )
                     )
                 ],
                 kb_info=KBChatInfo(
@@ -212,6 +219,9 @@ async def _generate_stream(
         )
         return orjson.dumps(chunk.model_dump(exclude_none=True)).decode()
     
+    # 流式 <think> 标签拆分器
+    splitter = ThinkingStreamSplitter()
+
     try:
         async for event in service.chat_stream(
             model=request.model,
@@ -256,12 +266,24 @@ async def _generate_stream(
                 yield f"data: {make_chunk(KBChatDelta(role='assistant'), kb_info=kb_info_obj)}\n\n"
             
             elif event_type == "content":
-                # 发送内容片段，跳过空内容避免无意义的空包
+                # 通过状态机拆分：thinking 阶段→reasoning_content，正文阶段→content
                 text = event_data.get("text", "")
-                if text:  # 只有非空内容才发送
-                    yield f"data: {make_chunk(KBChatDelta(content=text))}\n\n"
+                if text:
+                    for field, split_text in splitter.feed(text):
+                        delta = KBChatDelta(
+                            reasoning_content=split_text if field == "reasoning_content" else None,
+                            content=split_text if field == "content" else None,
+                        )
+                        yield f"data: {make_chunk(delta)}\n\n"
             
             elif event_type == "done":
+                # 刷新 splitter 缓冲区中的剩余内容
+                for field, split_text in splitter.flush():
+                    delta = KBChatDelta(
+                        reasoning_content=split_text if field == "reasoning_content" else None,
+                        content=split_text if field == "content" else None,
+                    )
+                    yield f"data: {make_chunk(delta)}\n\n"
                 # 发送结束标记
                 yield f"data: {make_chunk(KBChatDelta(), 'stop')}\n\n"
                 yield "data: [DONE]\n\n"

@@ -27,6 +27,7 @@ class TransformersLLMEngine(LLMEngine):
         self._tokenizer = None
         self._model = None
         self._device = None
+        self._supports_tools: Optional[bool] = None
 
     def _ensure_loaded(self) -> None:
         """在首次调用时加载模型，安全捕获导入错误并给出友好提示。"""
@@ -61,6 +62,47 @@ class TransformersLLMEngine(LLMEngine):
         self._tokenizer = tokenizer
         self._model = model
         self._device = device
+
+    def _check_tools_support(self) -> bool:
+        """检测 tokenizer 是否支持 tools 参数（结果缓存）"""
+        if self._supports_tools is not None:
+            return self._supports_tools
+        self._ensure_loaded()
+        try:
+            # 用最小化调用探测 tokenizer 是否接受 tools 关键字
+            self._tokenizer.apply_chat_template(
+                [{"role": "user", "content": "test"}],
+                tools=[],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            self._supports_tools = True
+        except (TypeError, Exception):
+            self._supports_tools = False
+        logger.info("Tokenizer tools 支持: {} (model={})", self._supports_tools, self.model_path)
+        return self._supports_tools
+
+    def apply_chat_template(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        **kwargs,
+    ) -> str | None:
+        """使用 HuggingFace tokenizer 原生 apply_chat_template 构建 prompt
+
+        当 tokenizer 支持 tools 参数时（Qwen3、GLM4 等），直接委托给 tokenizer，
+        确保工具定义和 tool_calls 历史以模型训练时的格式呈现。
+        不支持时返回 None，由 Strategy 层回退到手动模板。
+        """
+        self._ensure_loaded()
+        if tools and not self._check_tools_support():
+            return None
+        try:
+            template_kwargs = self._build_template_kwargs(tools=tools, **kwargs)
+            return self._tokenizer.apply_chat_template(messages, **template_kwargs)
+        except Exception as e:
+            logger.warning("tokenizer.apply_chat_template 失败: {}", e)
+            return None
 
     def _generate(self, prompt: str, **kwargs) -> str:
         """非流式生成文本"""

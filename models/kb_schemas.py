@@ -315,6 +315,9 @@ class KBChatMessageResponse(BaseModel):
     """对话消息响应"""
     role: str = Field(default="assistant", description="角色")
     content: str = Field(..., description="回复内容")
+    reasoning_content: Optional[str] = Field(
+        default=None, description="推理/思考过程内容（深度思考模式时返回）"
+    )
 
 
 class KBChatChoice(BaseModel):
@@ -355,9 +358,11 @@ class KBChatDelta(BaseModel):
     属性:
         role: 角色标识，通常只在第一个chunk中出现
         content: 增量文本内容，每个chunk推送部分生成的文本
+        reasoning_content: 增量推理/思考内容（深度思考模式的流式输出）
     """
     role: Optional[str] = None
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
 
 
 class KBChatChunkChoice(BaseModel):

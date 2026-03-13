@@ -40,6 +40,30 @@ class VLLMLLMEngine(LLMEngine):
         self._llm_engine = None    # 底层 LLMEngine（用于流式）
         self._fallback = None      # 若 vllm 不可用，回退到 transformers 实现
 
+    def apply_chat_template(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        **kwargs,
+    ) -> str | None:
+        """委托给底层引擎或 fallback 的 apply_chat_template"""
+        self._ensure_loaded()
+        if self._fallback is not None:
+            return self._fallback.apply_chat_template(messages, tools=tools, **kwargs)
+        # vLLM 底层 LLMEngine 不直接暴露 tokenizer.apply_chat_template，
+        # 尝试从引擎获取 tokenizer
+        if self._llm_engine is not None:
+            try:
+                tokenizer = self._llm_engine.get_tokenizer()
+                if tokenizer is None:
+                    return None
+                template_kwargs = self._build_template_kwargs(tools=tools, **kwargs)
+                return tokenizer.apply_chat_template(messages, **template_kwargs)
+            except Exception as e:
+                logger.warning("vLLM tokenizer.apply_chat_template 失败: {}", e)
+                return None
+        return None
+
     def _ensure_loaded(self) -> None:
         if self._llm_engine is not None or self._fallback is not None:
             return

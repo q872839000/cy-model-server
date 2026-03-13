@@ -232,19 +232,26 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 	@app.exception_handler(ModelServerException)
 	async def model_server_exception_handler(request: Request, exc: ModelServerException):
 		logger.error("Model server error: {} - {}", exc.error_code, exc.message)
-		# 根据错误类型推断 HTTP 状态码
+		# 根据错误类型推断 HTTP 状态码（与 OpenAI 错误规范对齐）
 		status_map = {
 			"MODEL_NOT_FOUND": 404,
 			"CONFIGURATION_ERROR": 400,
+			"UNSUPPORTED_PARAMETER": 400,
 			"RESOURCE_LIMIT_ERROR": 429,
+			"INFERENCE_ERROR": 500,
+			"MODEL_LOAD_ERROR": 503,
 		}
-		status_code = status_map.get(exc.error_code, 400)
+		status_code = status_map.get(exc.error_code, 500)
+		# OpenAI 错误类型：4xx 为 invalid_request_error，5xx 为 server_error
+		error_type = "invalid_request_error" if status_code < 500 else "server_error"
+		# 额外提取 param 信息（UnsupportedParameterError 携带）
+		param = exc.details.get("param") if exc.details else None
 		return ORJSONResponse(
 			{
 				"error": {
 					"message": exc.message,
-					"type": "invalid_request_error" if status_code < 500 else "server_error",
-					"param": None,
+					"type": error_type,
+					"param": param,
 					"code": exc.error_code,
 				}
 			},

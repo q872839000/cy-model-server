@@ -199,7 +199,7 @@ class ServiceContainer:
                 **kwargs
             ) -> str:
                 """非流式 LLM 调用函数"""
-                return await WORKER.generate_chat(
+                result = await WORKER.generate_chat(
                     model_name=model,
                     messages=messages,
                     max_tokens=max_tokens,
@@ -208,6 +208,8 @@ class ServiceContainer:
                     stream=False,
                     enable_thinking=enable_thinking,
                 )
+                # KB chat 只需要文本，从 StrategyOutput 中提取
+                return result.text
             
             async def llm_stream_fn(
                 model: str,

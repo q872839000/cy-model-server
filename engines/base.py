@@ -5,6 +5,57 @@ from typing import List, Dict, Any, Optional, Union, Iterator
 class LLMEngine(ABC):
 	"""LLM 引擎统一接口。负责具体推理实现（transformers/vLLM）。"""
 
+	def apply_chat_template(
+		self,
+		messages: List[Dict[str, Any]],
+		tools: Optional[List[Dict[str, Any]]] = None,
+		**kwargs,
+	) -> Optional[str]:
+		"""使用模型原生 tokenizer 构建 prompt（支持 tools/function calling）
+
+		子类应在 tokenizer 支持 apply_chat_template 时覆盖此方法。
+		返回 None 表示不支持，调用方应回退到 Strategy 层的手动模板。
+
+		Args:
+			messages: OpenAI 格式的对话消息列表（含 tool_calls/tool_call_id 等字段）
+			tools: OpenAI 格式的工具定义列表
+			**kwargs: 其他参数（如 enable_thinking、tool_choice）
+
+		Returns:
+			构建好的 prompt 字符串，或 None（不支持时）
+		"""
+		return None
+
+	@staticmethod
+	def _build_template_kwargs(
+		tools: Optional[List[Dict[str, Any]]] = None,
+		**kwargs,
+	) -> Dict[str, Any]:
+		"""构建 tokenizer.apply_chat_template 的通用参数字典
+
+		所有引擎子类共享此方法，避免重复的 kwargs 构建逻辑。
+		仅包含 tokenizer 实际接受的参数（tokenize, add_generation_prompt, tools, enable_thinking）。
+		tool_choice 等不被 HF tokenizer 原生支持的参数会被过滤掉。
+
+		Args:
+			tools: OpenAI 格式的工具定义列表
+			**kwargs: 其他参数（enable_thinking, tool_choice 等）
+
+		Returns:
+			可直接传给 tokenizer.apply_chat_template 的参数字典
+		"""
+		template_kwargs: Dict[str, Any] = {
+			"tokenize": False,
+			"add_generation_prompt": True,
+		}
+		if tools:
+			template_kwargs["tools"] = tools
+		# 部分 tokenizer 支持 enable_thinking（如 Qwen3）
+		enable_thinking = kwargs.get("enable_thinking")
+		if enable_thinking is not None:
+			template_kwargs["enable_thinking"] = enable_thinking
+		return template_kwargs
+
 	def generate(self, prompt: str, stream: bool = False, **kwargs) -> Union[str, Iterator[str]]:
 		"""
 		生成文本（统一接口，符合 OpenAI 范式）

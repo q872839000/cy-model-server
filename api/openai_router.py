@@ -15,26 +15,31 @@ API端点：
 
 import uuid
 import time
-from typing import List
+from typing import Any, List
 
 from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 from loguru import logger
 
 from workers.model_worker import WORKER
-from core.exceptions import ModelServerException
+from core.exceptions import ModelServerException, UnsupportedParameterError
 from core.services.chat_service import CHAT_SERVICE
 from utils.message_filter import clean_messages_for_history
-from tests.chat_logger import save_chat_log
+from utils.thinking_parser import parse_thinking_content, ThinkingStreamSplitter
+from utils.chat_logger import save_chat_log
 from models import (
     ChatCompletionRequest,
     ChatMessage,
+    ToolCall,
+    ToolCallFunction,
     ChatCompletionUsage,
     ChatCompletionChoice,
     ChatCompletionResponse,
     ChatCompletionDelta,
     ChatCompletionChunkChoice,
     ChatCompletionChunkResponse,
+    ToolCallChunk,
+    ToolCallChunkFunction,
     EmbeddingRequest,
     EmbeddingData,
     EmbeddingUsage,
@@ -51,7 +56,7 @@ def _normalize_message_role(role: str) -> str:
 
     OpenAI 兼容处理：
     - "developer" → "system"（OpenAI 新版 API 的 developer 角色等价于 system）
-    - "tool" → "user"（本服务暂不支持工具调用，将 tool 消息作为 user 输入处理）
+    - "tool" 保持原样（用于 function calling 的工具返回消息）
     - 其他角色保持原样，空值兜底为 "user"
 
     参数:
@@ -64,9 +69,6 @@ def _normalize_message_role(role: str) -> str:
     # OpenAI 新版 API 使用 developer 替代 system
     if normalized == "developer":
         return "system"
-    # 本服务暂不支持 tool calling，将 tool 消息作为 user 输入处理
-    if normalized == "tool":
-        return "user"
     return normalized or "user"
 
 
@@ -120,22 +122,44 @@ def _extract_text_from_content(content) -> str:
 
 
 def _normalize_messages(messages: list[ChatMessage]) -> list[dict]:
-    """将 ChatMessage 列表标准化为纯文本字典列表
+    """将 ChatMessage 列表标准化为下游可消费的字典列表
 
-    遍历所有消息，统一角色名并提取纯文本内容，
-    生成下游 WORKER/CHAT_SERVICE 可直接消费的格式。
+    遍历所有消息，统一角色名并提取文本内容。
+    保留 function calling 相关字段（tool_calls、tool_call_id、name），
+    确保完整的工具调用上下文可传递给 Engine/Strategy 层。
 
     参数:
         messages: 原始 ChatMessage 对象列表
 
     返回:
-        标准化后的消息字典列表，每项包含 "role" 和 "content" 键
+        标准化后的消息字典列表
     """
     normalized: list[dict] = []
     for m in messages:
         role = _normalize_message_role(getattr(m, "role", "user"))
         content = _extract_text_from_content(getattr(m, "content", ""))
-        normalized.append({"role": role, "content": content})
+        msg: dict = {"role": role, "content": content}
+
+        # 保留 assistant 消息中的 tool_calls（工具调用历史）
+        tool_calls = getattr(m, "tool_calls", None)
+        if tool_calls:
+            msg["tool_calls"] = [
+                tc.model_dump(exclude_none=True) if hasattr(tc, "model_dump") else tc
+                for tc in tool_calls
+            ]
+            # OpenAI 规范：assistant 带 tool_calls 时 content 可为 null
+            if not content:
+                msg["content"] = None
+
+        # 保留 tool 消息中的 tool_call_id 和 name
+        tool_call_id = getattr(m, "tool_call_id", None)
+        if tool_call_id:
+            msg["tool_call_id"] = tool_call_id
+        name = getattr(m, "name", None)
+        if name:
+            msg["name"] = name
+
+        normalized.append(msg)
     return normalized
 
 
@@ -242,6 +266,102 @@ def _infer_finish_reason(completion_tokens: int, max_tokens: int | None) -> str:
     return "length"
 
 
+def _validate_unsupported_params(req: ChatCompletionRequest) -> None:
+    """校验当前不支持的 OpenAI 参数，显式拒绝而非静默忽略
+
+    OpenAI 兼容策略：对于已在 schema 中声明但尚未实现的参数，
+    当客户端显式传入非默认值时，主动返回错误，避免行为不符预期。
+    """
+    # n > 1：多候选生成尚未实现
+    if req.n is not None and req.n > 1:
+        raise UnsupportedParameterError(
+            "n", "当前仅支持 n=1，多候选生成尚未实现"
+        )
+    # response_format：结构化输出尚未实现
+    if req.response_format is not None:
+        fmt_type = getattr(req.response_format, "type", None)
+        if fmt_type and fmt_type != "text":
+            raise UnsupportedParameterError(
+                "response_format",
+                f"当前仅支持 response_format.type='text'，不支持 '{fmt_type}'",
+            )
+    # parallel_tool_calls=false：本服务始终按单次工具调用语义处理，
+    # 显式传入 false 时拒绝，避免客户端误认为并行调用已受限
+    if req.parallel_tool_calls is not None and req.parallel_tool_calls is False:
+        raise UnsupportedParameterError(
+            "parallel_tool_calls",
+            "当前不支持显式禁用并行工具调用（parallel_tool_calls=false）",
+        )
+
+    # ---- 以下参数已声明但尚未实现，传入非默认值时记录警告 ----
+    # 策略说明：这些参数对生成结果有实质影响，但当前引擎层未消费。
+    # 采用 warn 而非 reject，原因是多数 OpenAI 客户端/SDK 会默认携带这些字段，
+    # 硬拒绝会导致大量客户端无法正常对接。
+    _ignored_params: list[tuple[str, Any, Any]] = [
+        ("presence_penalty", req.presence_penalty, 0),
+        ("frequency_penalty", req.frequency_penalty, 0),
+        ("logit_bias", req.logit_bias, None),
+        ("seed", req.seed, None),
+        ("logprobs", req.logprobs, None),
+        ("top_logprobs", req.top_logprobs, None),
+    ]
+    for param_name, value, default in _ignored_params:
+        if value is not None and value != default:
+            logger.warning(
+                "参数 '{}' 已传入(值={})但当前未实现，将被忽略",
+                param_name, value,
+            )
+
+
+def _resolve_tools_and_choice(req: ChatCompletionRequest):
+    """统一解析 tools/tool_choice，兼容旧版 functions/function_call
+
+    OpenAI 旧版使用 functions + function_call，新版使用 tools + tool_choice。
+    当请求中仅包含旧版字段时，自动映射为新版格式，确保下游统一处理。
+
+    Returns:
+        (tools, tool_choice) 元组
+    """
+    tools = req.tools if req.tools else None
+    tool_choice = req.tool_choice
+
+    # 旧版 functions/function_call → 新版 tools/tool_choice 兼容映射
+    if not tools and req.functions:
+        tools = [
+            {"type": "function", "function": fn}
+            for fn in req.functions
+        ]
+        # 映射 function_call → tool_choice
+        if req.function_call is not None and tool_choice is None:
+            fc = req.function_call
+            if isinstance(fc, str):
+                # "auto" / "none" 直接映射
+                tool_choice = fc
+            elif isinstance(fc, dict) and "name" in fc:
+                # {"name": "xxx"} → {"type": "function", "function": {"name": "xxx"}}
+                tool_choice = {
+                    "type": "function",
+                    "function": {"name": fc["name"]},
+                }
+
+    return tools, tool_choice
+
+
+def _normalize_stop(req_stop) -> list[str] | None:
+    """将 OpenAI stop 参数归一化为 List[str] 或 None
+
+    OpenAI stop 支持 str | List[str] | None。
+    """
+    if req_stop is None:
+        return None
+    if isinstance(req_stop, str):
+        return [req_stop] if req_stop else None
+    if isinstance(req_stop, list):
+        filtered = [s for s in req_stop if isinstance(s, str) and s]
+        return filtered if filtered else None
+    return None
+
+
 @router.post('/v1/chat/completions')
 async def chat_completions(req: ChatCompletionRequest, request: Request):
     """
@@ -260,9 +380,13 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         流式: StreamingResponse，包含多个data chunk
         
     异常:
-        HTTPException: 当推理失败时抛出500错误
+        HTTPException 400: 参数不支持
+        HTTPException 500: 推理失败
     """
     try:
+        # ---- 参数校验：显式拒绝尚未支持的参数 ----
+        _validate_unsupported_params(req)
+
         # 兼容 OpenAI content blocks + role 扩展（developer/tool 等），统一成纯文本
         normalized_messages = _normalize_messages(req.messages)
 
@@ -273,23 +397,40 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         temperature = _safe_float(req.temperature, 0.0)
         top_p = _safe_float(req.top_p, 1.0)
         enable_thinking = _safe_bool(req.enable_thinking, True)
-        
+        stop = _normalize_stop(req.stop)
+
+        # 统一 tools/tool_choice（兼容旧版 functions/function_call）
+        tools, tool_choice = _resolve_tools_and_choice(req)
+
         # 预先构造 prompt 并统计 prompt_tokens（流式/非流式共用，避免重复计算）
+        # 此处传入 tools 以使 prompt 统计与真实执行路径尽量一致
         tokenizer = _get_tokenizer_for_model(req.model)
-        prompt = CHAT_SERVICE.build_prompt(req.model, cleaned_messages, enable_thinking)
+        prompt = CHAT_SERVICE.build_prompt(
+            req.model, cleaned_messages, enable_thinking,
+            tools=tools, tool_choice=tool_choice,
+        )
         prompt_tokens = _count_tokens(tokenizer, prompt)
+
         if not req.stream:
             # 非流式：一次性返回
-            text = await WORKER.generate_chat(
+            chat_result = await WORKER.generate_chat(
                 model_name=req.model,
                 messages=cleaned_messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                stop=stop,
                 enable_thinking=enable_thinking,
+                tools=tools,
+                tool_choice=tool_choice,
             )
 
-            # completion_tokens 统计基于最终输出文本
+            text = chat_result.get_text()
+
+            # 拆分 <think> 标签：reasoning_content 和 content 分离
+            reasoning_content, content = parse_thinking_content(text)
+
+            # completion_tokens 统计基于完整输出文本（含思考内容）
             completion_tokens = _count_tokens(tokenizer, text)
             usage = ChatCompletionUsage(
                 prompt_tokens=prompt_tokens,
@@ -297,7 +438,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 total_tokens=prompt_tokens + completion_tokens,
             )
 
-            # 测试记录内容
+            # 对话日志记录（调试/监控用）
             await save_chat_log(
                 model=req.model,
                 params={
@@ -306,6 +447,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     "top_p": top_p,
                     "enable_thinking": enable_thinking,
                     "stream": req.stream,
+                    "tools": bool(tools),
                 },
                 messages=cleaned_messages,
                 assistant_content=text,
@@ -316,6 +458,32 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 },
             )
 
+            # 构建 assistant 消息
+            assistant_msg = ChatMessage(
+                role="assistant",
+                content=content or None,
+                reasoning_content=reasoning_content,
+            )
+
+            # 确定 finish_reason：策略层已设置 "tool_calls"/"stop"，
+            # 路由层仅需补充 "length" 判断（策略层无 token 计数信息）
+            if chat_result.has_tool_calls:
+                # 将工具调用转换为 OpenAI ToolCall 模型
+                assistant_msg.tool_calls = [
+                    ToolCall(
+                        id=tc["id"],
+                        type=tc.get("type", "function"),
+                        function=ToolCallFunction(
+                            name=tc["function"]["name"],
+                            arguments=tc["function"]["arguments"],
+                        ),
+                    )
+                    for tc in chat_result.tool_calls
+                ]
+                finish_reason = "tool_calls"
+            else:
+                finish_reason = _infer_finish_reason(completion_tokens, max_tokens)
+
             return ChatCompletionResponse(
                 id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
                 created=int(time.time()),
@@ -323,90 +491,136 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 choices=[
                     ChatCompletionChoice(
                         index=0,
-                        message=ChatMessage(role="assistant", content=text),
-                        finish_reason=_infer_finish_reason(completion_tokens, max_tokens),
+                        message=assistant_msg,
+                        finish_reason=finish_reason,
                     )
                 ],
                 usage=usage,
             )
 
         # ====== 流式模式：SSE (Server-Sent Events) 格式输出 ======
-        # 延迟导入 orjson，避免在不需要流式时加载
         import orjson as _oj
+
+        # 当 tools 存在且 tool_choice != "none" 时，需要缓冲全部输出再决定发送方式。
+        # 原因：本地模型无法提前声明是否会调用工具，必须等生成结束后解析。
+        # OpenAI 规范要求 tool_calls 通过 delta.tool_calls 推送，不能混在 content 中。
+        should_buffer_for_tools = bool(tools and tool_choice != "none")
 
         async def event_generator():
             """SSE 事件生成器：逐 chunk 推送流式响应"""
-            # 同一次对话的所有 chunk 共享相同的 id 和 created
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
             created = int(time.time())
-
-            # OpenAI 兼容：stream_options.include_usage=true 时，在最后追加一个仅含 usage 的 chunk
             include_usage = bool(req.stream_options and req.stream_options.include_usage)
 
-            def dump_chunk(chunk: ChatCompletionChunkResponse) -> str:
-                return _oj.dumps(chunk.model_dump(exclude_none=True)).decode()
+            # ---- SSE 格式化辅助函数 ----
 
-            # OpenAI 规范：首个 chunk 仅包含 role="assistant"，不含 content
-            yield (
-                "data: "
-                + dump_chunk(
-                    ChatCompletionChunkResponse(
-                        id=chunk_id,
-                        created=created,
-                        model=req.model,
-                        choices=[
-                            ChatCompletionChunkChoice(
-                                index=0,
-                                delta=ChatCompletionDelta(role="assistant"),
-                                finish_reason=None,
-                            )
-                        ],
-                    )
-                )
-                + "\n\n"
-            )
+            def _sse(chunk: ChatCompletionChunkResponse) -> str:
+                """将 chunk 对象序列化为 SSE data 行"""
+                return "data: " + _oj.dumps(chunk.model_dump(exclude_none=True)).decode() + "\n\n"
 
-            # 流式生成：使用统一的 generate_chat 接口，逐 chunk 获取文本增量
+            def _delta_sse(
+                delta: ChatCompletionDelta,
+                finish_reason: str | None = None,
+            ) -> str:
+                """构建包含单个 delta 的 SSE data 行"""
+                return _sse(ChatCompletionChunkResponse(
+                    id=chunk_id,
+                    created=created,
+                    model=req.model,
+                    choices=[ChatCompletionChunkChoice(
+                        index=0,
+                        delta=delta,
+                        finish_reason=finish_reason,
+                    )],
+                ))
+
+            def _thinking_delta_sse(field: str, text: str) -> str:
+                """将 ThinkingStreamSplitter 输出转换为 SSE data 行"""
+                return _delta_sse(ChatCompletionDelta(
+                    reasoning_content=text if field == "reasoning_content" else None,
+                    content=text if field == "content" else None,
+                ))
+
+            # ---- OpenAI 规范：首个 chunk 仅包含 role="assistant" ----
+            yield _delta_sse(ChatCompletionDelta(role="assistant"))
+
+            # ---- 收集生成文本 ----
             full_text = ""
-            try:
-                async for text_chunk in WORKER.generate_chat(
-                    model_name=req.model,
-                    messages=cleaned_messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    stream=True,
-                    enable_thinking=enable_thinking,
-                ):
-                    # 为了在流式结束后计算 completion_tokens，需要拼接完整输出
-                    if text_chunk:
-                        full_text += text_chunk
-                        # 只有非空chunk才发送，避免无意义的空包
-                        yield (
-                            "data: "
-                            + dump_chunk(
-                                ChatCompletionChunkResponse(
-                                    id=chunk_id,
-                                    created=created,
-                                    model=req.model,
-                                    choices=[
-                                        ChatCompletionChunkChoice(
-                                            index=0,
-                                            delta=ChatCompletionDelta(content=text_chunk),
-                                            finish_reason=None,
-                                        )
-                                    ],
-                                )
-                            )
-                            + "\n\n"
-                        )
-            except Exception:
-                raise
+            finish_reason = "stop"
+            splitter = ThinkingStreamSplitter()
 
-            # 结束后统一计算 completion_tokens，并决定 finish_reason
+            async for text_chunk in WORKER.generate_chat(
+                model_name=req.model,
+                messages=cleaned_messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+                stream=True,
+                enable_thinking=enable_thinking,
+                tools=tools,
+                tool_choice=tool_choice,
+            ):
+                if not text_chunk:
+                    continue
+                full_text += text_chunk
+
+                # 普通模式：实时推送 content/reasoning_content 增量
+                if not should_buffer_for_tools:
+                    for field, text in splitter.feed(text_chunk):
+                        yield _thinking_delta_sse(field, text)
+
+            # ---- 生成结束后的处理 ----
+
+            if should_buffer_for_tools:
+                # 工具缓冲模式：通过 Service 层解析工具调用（保持分层架构）
+                parsed_calls = CHAT_SERVICE.parse_tool_calls(req.model, full_text)
+
+                if parsed_calls:
+                    # 按 OpenAI 规范推送 tool_calls 增量
+                    # 每个工具调用分两个 chunk：首个含 id/type/name，后续含 arguments
+                    for idx, tc in enumerate(parsed_calls):
+                        fn = tc["function"]
+                        # 首个 chunk：id + type + function.name
+                        yield _delta_sse(ChatCompletionDelta(
+                            tool_calls=[ToolCallChunk(
+                                index=idx,
+                                id=tc["id"],
+                                type="function",
+                                function=ToolCallChunkFunction(
+                                    name=fn["name"],
+                                    arguments="",
+                                ),
+                            )],
+                        ))
+                        # 后续 chunk：function.arguments（完整发送）
+                        yield _delta_sse(ChatCompletionDelta(
+                            tool_calls=[ToolCallChunk(
+                                index=idx,
+                                function=ToolCallChunkFunction(
+                                    arguments=fn["arguments"],
+                                ),
+                            )],
+                        ))
+                    finish_reason = "tool_calls"
+                else:
+                    # 无工具调用：回放缓冲文本（经过 thinking splitter 处理）
+                    replay_splitter = ThinkingStreamSplitter()
+                    for field, text in replay_splitter.feed(full_text):
+                        yield _thinking_delta_sse(field, text)
+                    for field, text in replay_splitter.flush():
+                        yield _thinking_delta_sse(field, text)
+            else:
+                # 普通模式：刷新 splitter 缓冲区中的剩余内容
+                for field, text in splitter.flush():
+                    yield _thinking_delta_sse(field, text)
+
+            # ---- 统计与日志 ----
             completion_tokens = _count_tokens(tokenizer, full_text)
 
-            # 测试记录内容
+            if finish_reason == "stop":
+                finish_reason = _infer_finish_reason(completion_tokens, max_tokens)
+
             await save_chat_log(
                 model=req.model,
                 params={
@@ -415,6 +629,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     "top_p": top_p,
                     "enable_thinking": enable_thinking,
                     "stream": req.stream,
+                    "tools": bool(tools),
                 },
                 messages=cleaned_messages,
                 assistant_content=full_text,
@@ -425,46 +640,23 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 },
             )
 
-            # 结束块
-            yield (
-                "data: "
-                + dump_chunk(
-                    ChatCompletionChunkResponse(
-                        id=chunk_id,
-                        created=created,
-                        model=req.model,
-                        choices=[
-                            ChatCompletionChunkChoice(
-                                index=0,
-                                delta=ChatCompletionDelta(),
-                                finish_reason=_infer_finish_reason(completion_tokens, max_tokens),
-                            )
-                        ],
-                    )
-                )
-                + "\n\n"
-            )
+            # ---- 结束 chunk（含 finish_reason）----
+            yield _delta_sse(ChatCompletionDelta(), finish_reason=finish_reason)
 
+            # ---- OpenAI 兼容：include_usage 的额外 usage chunk ----
             if include_usage:
-                # OpenAI 兼容：最后额外发一个 chunk，choices=[]，usage 有值
                 usage = ChatCompletionUsage(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=prompt_tokens + completion_tokens,
                 )
-                yield (
-                    "data: "
-                    + dump_chunk(
-                        ChatCompletionChunkResponse(
-                            id=chunk_id,
-                            created=created,
-                            model=req.model,
-                            choices=[],
-                            usage=usage,
-                        )
-                    )
-                    + "\n\n"
-                )
+                yield _sse(ChatCompletionChunkResponse(
+                    id=chunk_id,
+                    created=created,
+                    model=req.model,
+                    choices=[],
+                    usage=usage,
+                ))
 
             # OpenAI 规范：流式结束时发送 [DONE] 标记
             yield "data: [DONE]\n\n"

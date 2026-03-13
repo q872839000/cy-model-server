@@ -41,8 +41,9 @@ def filter_thinking_content(messages: List[Dict[str, Any]]) -> List[Dict[str, An
         cleaned_content = _remove_thinking_tags(content)
         filtered_msg["content"] = cleaned_content
         
-        # 如果过滤后内容为空，跳过该消息
-        if cleaned_content.strip():
+        # 如果过滤后内容为空且无 tool_calls，跳过该消息
+        # 保留带 tool_calls 的 assistant 消息（content 可为空）
+        if cleaned_content.strip() or filtered_msg.get("tool_calls") or filtered_msg.get("tool_call_id"):
             filtered_messages.append(filtered_msg)
     
     return filtered_messages

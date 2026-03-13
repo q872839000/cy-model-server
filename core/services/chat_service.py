@@ -17,7 +17,7 @@ from typing import List, Dict, Any, Optional, Iterator, AsyncIterator
 
 from core.registry import REGISTRY
 from core.container import CONTAINER
-from core.exceptions import ModelNotFoundError, InferenceError
+from core.exceptions import ModelServerException, ModelNotFoundError, InferenceError
 from strategies.protocol import StrategyInput, StrategyOutput
 from workers.async_worker import ASYNC_WORKER
 from loguru import logger
@@ -74,20 +74,26 @@ class ChatService:
         model_name: Optional[str],
         messages: List[Dict[str, Any]],
         enable_thinking: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
     ) -> str:
         """
         构建 Prompt（用于 token 统计等场景）
+
+        当 tools 存在时，会尝试引擎原生模板或回退注入，以使返回的 prompt
+        与真实生成路径一致，从而获得更准确的 prompt_tokens 统计。
         
         Args:
             model_name: 模型名称
             messages: 消息列表
             enable_thinking: 是否启用深度思考
+            tools: OpenAI 格式的工具定义列表（影响 prompt 长度统计）
             
         Returns:
             构建好的 prompt 字符串
         """
         try:
-            _, strategy = self._get_engine_and_strategy(model_name)
+            engine, strategy = self._get_engine_and_strategy(model_name)
         except ModelNotFoundError:
             return ""
         
@@ -98,7 +104,25 @@ class ChatService:
                 enable_thinking = llm_config.enable_thinking
             else:
                 enable_thinking = False
-        
+
+        # 当 tools 存在时，镜像 Strategy.execute() 的路径选择逻辑：
+        # - tool_choice 为默认值(None/"auto")时，尝试引擎原生模板
+        # - tool_choice 为非默认值时，强制走 fallback（注入行为指令）
+        if tools:
+            _tc = tool_choice
+            tool_choice_is_default = (_tc is None or _tc == "auto")
+            if tool_choice_is_default:
+                prompt = engine.apply_chat_template(
+                    messages, tools=tools, enable_thinking=enable_thinking,
+                )
+                if prompt is not None:
+                    return prompt
+            # 原生模板不支持或 tool_choice 非默认，回退：注入 tools + tool_choice 指令
+            injected = strategy.inject_tools_into_messages(messages, tools, tool_choice)
+            return strategy.apply_chat_template(
+                injected, enable_thinking=enable_thinking,
+            )
+
         return strategy.apply_chat_template(messages, enable_thinking=enable_thinking)
 
     def get_tokenizer(self, model_name: Optional[str]):
@@ -139,6 +163,29 @@ class ChatService:
         
         return None
 
+    def parse_tool_calls(
+        self,
+        model_name: Optional[str],
+        text: str,
+    ) -> list[dict]:
+        """从模型输出文本中解析工具调用（委托给对应 Strategy）
+
+        Router 层不应直接依赖 Strategy 层的内部函数，
+        通过 Service 层暴露此能力，保持分层架构。
+
+        Args:
+            model_name: 模型名称
+            text: 模型生成的完整文本
+
+        Returns:
+            OpenAI 格式的 tool_calls 列表，空列表表示无工具调用
+        """
+        try:
+            _, strategy = self._get_engine_and_strategy(model_name)
+        except ModelNotFoundError:
+            return []
+        return strategy.parse_tool_calls(text)
+
     def _build_input(
         self,
         model_name: Optional[str],
@@ -149,6 +196,8 @@ class ChatService:
         top_p: float = 0.95,
         stop: Optional[List[str]] = None,
         enable_thinking: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
         **kwargs,
     ) -> StrategyInput:
         """
@@ -172,6 +221,8 @@ class ChatService:
             top_p=top_p,
             stop=stop,
             enable_thinking=enable_thinking,
+            tools=tools,
+            tool_choice=tool_choice,
             extra=kwargs,
         )
 
@@ -180,12 +231,17 @@ class ChatService:
         model_name: Optional[str],
         messages: List[Dict[str, Any]],
         **kwargs,
-    ) -> str:
-        """同步执行对话生成（供 Worker 调用）"""
+    ) -> StrategyOutput:
+        """同步执行对话生成（供 Worker 调用）
+
+        返回 StrategyOutput，包含 text、tool_calls、finish_reason 等。
+        """
         engine, strategy = self._get_engine_and_strategy(model_name)
         input = self._build_input(model_name, messages, stream=False, **kwargs)
         output = strategy.execute(engine, input)
-        return output.get_text()
+        # 确保 text 已求值（消费 stream_iterator，如有）
+        output.get_text()
+        return output
 
     def _execute_stream_sync(
         self,
@@ -208,9 +264,11 @@ class ChatService:
         top_p: float = 0.95,
         stop: Optional[List[str]] = None,
         enable_thinking: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
         timeout: Optional[float] = None,
         **kwargs,
-    ) -> str:
+    ) -> StrategyOutput:
         """
         异步生成对话回复（非流式）
         
@@ -222,11 +280,13 @@ class ChatService:
             top_p: 核采样参数
             stop: 停止词列表
             enable_thinking: 是否启用深度思考
+            tools: OpenAI 格式的工具定义列表
+            tool_choice: 工具选择策略
             timeout: 超时时间（秒）
             **kwargs: 其他参数
             
         Returns:
-            生成的文本
+            StrategyOutput: 统一输出结构（text + tool_calls + finish_reason）
         """
         try:
             result = await ASYNC_WORKER.run(
@@ -238,10 +298,15 @@ class ChatService:
                 top_p=top_p,
                 stop=stop,
                 enable_thinking=enable_thinking,
+                tools=tools,
+                tool_choice=tool_choice,
                 timeout=timeout,
                 **kwargs,
             )
             return result
+        except ModelServerException:
+            # 保留原始异常语义（ModelNotFoundError → 404, UnsupportedParameterError → 400 等）
+            raise
         except Exception as e:
             logger.error(f"对话生成失败: {e}")
             raise InferenceError(model_name or "default", str(e))
@@ -255,6 +320,8 @@ class ChatService:
         top_p: float = 0.95,
         stop: Optional[List[str]] = None,
         enable_thinking: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
         timeout: Optional[float] = None,
         **kwargs,
     ) -> AsyncIterator[str]:
@@ -269,6 +336,8 @@ class ChatService:
             top_p: 核采样参数
             stop: 停止词列表
             enable_thinking: 是否启用深度思考
+            tools: OpenAI 格式的工具定义列表
+            tool_choice: 工具选择策略
             timeout: 单个 chunk 超时时间（秒）
             **kwargs: 其他参数
             
@@ -285,10 +354,15 @@ class ChatService:
                 top_p=top_p,
                 stop=stop,
                 enable_thinking=enable_thinking,
+                tools=tools,
+                tool_choice=tool_choice,
                 timeout=timeout,
                 **kwargs,
             ):
                 yield chunk
+        except ModelServerException:
+            # 保留原始异常语义
+            raise
         except Exception as e:
             logger.error(f"流式对话生成失败: {e}")
             raise InferenceError(model_name or "default", str(e))

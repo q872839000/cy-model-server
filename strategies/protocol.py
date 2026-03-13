@@ -29,6 +29,8 @@ class StrategyInput:
         top_p: 核采样参数
         stop: 停止词列表
         enable_thinking: 是否启用深度思考模式（部分模型支持）
+        tools: OpenAI 格式的工具定义列表（function calling 支持）
+        tool_choice: 工具选择策略（"auto"/"none"/"required" 或指定工具）
         extra: 扩展参数，用于模型特定配置
     """
     messages: List[Dict[str, Any]]
@@ -38,6 +40,8 @@ class StrategyInput:
     top_p: float = 0.95
     stop: Optional[List[str]] = None
     enable_thinking: bool = False
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Any] = None
     extra: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
@@ -69,6 +73,8 @@ class StrategyInput:
             top_p=kwargs.pop("top_p", 0.95),
             stop=kwargs.pop("stop", None),
             enable_thinking=kwargs.pop("enable_thinking", False),
+            tools=kwargs.pop("tools", None),
+            tool_choice=kwargs.pop("tool_choice", None),
             extra=kwargs,
         )
 
@@ -84,11 +90,15 @@ class StrategyOutput:
         text: 生成的完整文本（非流式时使用）
         stream_iterator: 流式文本迭代器（流式时使用）
         thinking_content: 思考内容（如果启用了 enable_thinking）
+        tool_calls: 模型请求的工具调用列表（function calling 时返回）
+        finish_reason: 生成结束原因 ("stop"/"length"/"tool_calls")
         metadata: 输出元数据，如 token 统计等
     """
     text: Optional[str] = None
     stream_iterator: Optional[Iterator[str]] = None
     thinking_content: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    finish_reason: str = "stop"
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @property
@@ -96,6 +106,11 @@ class StrategyOutput:
         """是否为流式输出"""
         return self.stream_iterator is not None
     
+    @property
+    def has_tool_calls(self) -> bool:
+        """是否包含工具调用"""
+        return bool(self.tool_calls)
+
     def get_text(self) -> str:
         """
         获取完整文本

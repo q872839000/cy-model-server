@@ -18,6 +18,7 @@ from loguru import logger
 from core.registry import REGISTRY
 from core.exceptions import ModelNotFoundError, InferenceError
 from core.services.chat_service import CHAT_SERVICE
+from strategies.protocol import StrategyOutput
 from workers.async_worker import ASYNC_WORKER
 
 
@@ -36,20 +37,31 @@ class ModelWorker:
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.95,
+        stop: Optional[List[str]] = None,
         stream: bool = False,
+        enable_thinking: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
         **kwargs
-    ) -> Union[Coroutine[Any, Any, str], AsyncIterator[str]]:
+    ) -> Union[Coroutine[Any, Any, StrategyOutput], AsyncIterator[str]]:
         """
         对话生成（统一接口，符合 OpenAI 范式）
         
         Args:
             model_name: 模型名称
             messages: 消息列表
+            max_tokens: 最大生成 token 数
+            temperature: 生成温度
+            top_p: 核采样参数
+            stop: 停止词列表
             stream: 是否流式输出
+            enable_thinking: 是否启用深度思考
+            tools: OpenAI 格式的工具定义列表
+            tool_choice: 工具选择策略
             **kwargs: 其他生成参数
         
         Returns:
-            stream=False: 返回协程，await 后得到完整文本
+            stream=False: 返回协程，await 后得到 StrategyOutput（含 text/tool_calls/finish_reason）
             stream=True: 返回异步迭代器，可直接 async for 迭代
         """
         if stream:
@@ -59,6 +71,10 @@ class ModelWorker:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                stop=stop,
+                enable_thinking=enable_thinking,
+                tools=tools,
+                tool_choice=tool_choice,
                 **kwargs,
             )
         return CHAT_SERVICE.generate(
@@ -67,6 +83,10 @@ class ModelWorker:
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            stop=stop,
+            enable_thinking=enable_thinking,
+            tools=tools,
+            tool_choice=tool_choice,
             **kwargs,
         )
     

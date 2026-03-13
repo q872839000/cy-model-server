@@ -100,6 +100,9 @@ class ChatMessage(BaseModel):
     refusal: Optional[str] = Field(
         default=None, description="模型拒绝回答的原因"
     )
+    reasoning_content: Optional[str] = Field(
+        default=None, description="推理/思考过程内容（深度思考模式时返回）"
+    )
 
 
 # ==================== 请求模型 ====================
@@ -139,8 +142,17 @@ class ResponseFormat(BaseModel):
 class ChatCompletionRequest(BaseModel):
     """聊天补全请求（完全兼容 OpenAI API 规范）
 
-    所有 OpenAI 标准字段均已声明。服务端未实现的字段会被接受但忽略，
-    确保任何兼容 OpenAI 的客户端/插件都不会因为多传字段而收到 422。
+    所有 OpenAI 标准字段均已声明，确保任何兼容 OpenAI 的客户端/插件
+    都不会因为多传字段而收到 422。
+
+    参数处理策略：
+    - 已实现：model, messages, max_tokens, temperature, top_p, stop, stream,
+      stream_options, tools, tool_choice, functions, function_call, enable_thinking
+    - 显式拒绝（传入非默认值时返回 400）：n>1, response_format(非text),
+      parallel_tool_calls=false
+    - 接受但忽略（传入非默认值时记录警告）：presence_penalty, frequency_penalty,
+      logit_bias, seed, logprobs, top_logprobs
+    - 透传忽略（不影响行为）：user, service_tier, store, metadata
     """
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -344,6 +356,9 @@ class ChatCompletionDelta(BaseModel):
         default=None, description="（已废弃）增量函数调用信息"
     )
     refusal: Optional[str] = Field(default=None, description="模型拒绝回答的原因")
+    reasoning_content: Optional[str] = Field(
+        default=None, description="增量推理/思考内容（深度思考模式的流式输出）"
+    )
 
 
 class ChatCompletionChunkChoice(BaseModel):

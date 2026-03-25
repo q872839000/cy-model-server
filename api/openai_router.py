@@ -15,7 +15,7 @@ API端点：
 
 import uuid
 import time
-from typing import Any, List
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
@@ -163,13 +163,17 @@ def _normalize_messages(messages: list[ChatMessage]) -> list[dict]:
     return normalized
 
 
-def _resolve_max_tokens(req: ChatCompletionRequest) -> int:
-    """解析最大生成 token 数，优先使用 max_completion_tokens"""
+def _get_client_max_tokens(req: ChatCompletionRequest) -> Optional[int]:
+    """提取客户端显式传入的 max_tokens 原始值
+
+    OpenAI 兼容：优先使用 max_completion_tokens，其次 max_tokens。
+    返回 None 表示客户端未显式指定（由动态预算决定）。
+    """
     if req.max_completion_tokens is not None:
         return int(req.max_completion_tokens)
     if req.max_tokens is not None:
         return int(req.max_tokens)
-    return 2048
+    return None
 
 
 def _safe_float(val, default: float) -> float:
@@ -393,10 +397,10 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         # 过滤历史消息中的思考内容，避免干扰和冗余
         cleaned_messages = clean_messages_for_history(normalized_messages)
 
-        max_tokens = _resolve_max_tokens(req)
+        client_max_tokens = _get_client_max_tokens(req)
         temperature = _safe_float(req.temperature, 0.0)
         top_p = _safe_float(req.top_p, 1.0)
-        enable_thinking = _safe_bool(req.enable_thinking, True)
+        enable_thinking = req.enable_thinking  # None 时由 ChatService 从模型配置读取默认值
         stop = _normalize_stop(req.stop)
 
         # 统一 tools/tool_choice（兼容旧版 functions/function_call）
@@ -410,6 +414,11 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             tools=tools, tool_choice=tool_choice,
         )
         prompt_tokens = _count_tokens(tokenizer, prompt)
+
+        # 动态预算：根据 context_window 和 prompt_tokens 计算安全的 max_tokens
+        max_tokens = CHAT_SERVICE.resolve_max_tokens(
+            req.model, prompt_tokens, client_max_tokens,
+        )
 
         if not req.stream:
             # 非流式：一次性返回

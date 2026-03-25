@@ -234,6 +234,10 @@ class LLMModelConfig(BaseModel):
     device: Optional[str] = Field(default=None, description="设备")
     gen_params: Optional[Dict[str, Any]] = Field(default=None, description="生成参数")
     enable_thinking: bool = Field(default=False, description="是否启用思维模式")
+    context_window: Optional[int] = Field(
+        default=None,
+        description="模型上下文窗口大小（token 数）。未配置时自动从模型 config 探测",
+    )
 
 
 class EmbeddingModelConfig(BaseModel):

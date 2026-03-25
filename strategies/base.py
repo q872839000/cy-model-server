@@ -234,6 +234,17 @@ class LLMStrategy(ABC):
         """获取默认停止词列表，子类可覆盖"""
         return []
 
+    def prefer_native_template(self) -> bool:
+        """是否优先使用引擎原生 tokenizer.apply_chat_template()
+
+        返回 True 时，execute() 在无 tools 场景也会优先尝试引擎原生模板
+        （tokenize=False，返回字符串），仅在原生模板不可用时回退到策略手动模板。
+
+        适用于自定义 tokenizer（如 GLM-4 系列），引擎模板格式比策略手动
+        拼接更可靠，且 tokenizer.__call__ 能正确编码自身的特殊标记。
+        """
+        return False
+
     def parse_tool_calls(self, text: str) -> list[dict[str, Any]]:
         """从模型输出中解析工具调用
 
@@ -310,25 +321,32 @@ class LLMStrategy(ABC):
     def execute(self, engine: "LLMEngine", input: StrategyInput) -> StrategyOutput:
         """
         执行生成（新协议接口）
-        
+
         统一的生成入口，返回 StrategyOutput。
-        工具调用处理路径：
-        1. 引擎原生 apply_chat_template(tools=..., tool_choice=...) — 优先
-        2. system prompt 注入工具定义和 tool_choice 行为指令 — 回退
-        非流式模式下自动解析工具调用并设置 finish_reason="tool_calls"。
-        
+        所有路径最终产出 **字符串 prompt**，由引擎统一编码和生成。
+
+        Prompt 选择优先级：
+        1. 引擎原生 tools 模板（tokenize=False，返回字符串）
+        2. prefer_native_template 引擎原生模板（tokenize=False，返回字符串）
+        3. 策略 build_prompt() 手动模板（返回字符串）
+        回退时如有 tools，通过 system prompt 注入工具定义和 tool_choice 行为指令。
+
+        thinking 处理：
+        - 策略通过 build_prompt() 声明 thinking_prefix（如 "<think>"）
+        - 使用原生模板时，若原生字符串未包含 thinking 标记，自动追加
+        - 输出流中统一前置 thinking_prefix（供 ThinkingStreamSplitter 解析）
+
         Args:
             engine: LLM 引擎实例
             input: 策略输入（含 tools、tool_choice）
-            
+
         Returns:
             StrategyOutput: 统一的输出结构
         """
         prompt = None
-        used_native_template = False
 
-        # 当请求包含 tools 时，优先尝试引擎原生模板
-        # 注意：HF tokenizer 原生模板不支持 tool_choice 语义，
+        # ---- 1. Tools 路径：引擎原生 tools 模板 ----
+        # HF tokenizer 原生模板不支持 tool_choice 语义，
         # 当 tool_choice 为非默认值时，强制走 fallback 路径以注入行为指令
         _tc = input.tool_choice
         tool_choice_is_default = (_tc is None or _tc == "auto")
@@ -339,40 +357,58 @@ class LLMStrategy(ABC):
                 enable_thinking=input.enable_thinking,
             )
             if prompt is not None:
-                used_native_template = True
                 logger.debug("使用引擎原生 tools 模板")
 
+        # ---- 2. prefer_native_template 路径：引擎原生模板（字符串） ----
+        # 适用于 GLM-4 等自定义 tokenizer 的模型，
+        # 引擎模板格式更可靠，但始终返回字符串（tokenize=False），
+        # 由 _build_inputs 统一编码，避免 tokenize=True 返回类型不一致的问题
+        if prompt is None and self.prefer_native_template():
+            prompt = engine.apply_chat_template(
+                input.messages,
+                enable_thinking=input.enable_thinking,
+            )
+            if prompt is not None:
+                logger.debug("使用引擎原生模板（prefer_native_template）")
+
+        # ---- 3. 获取策略的 prompt 元数据（stop_words、thinking_prefix） ----
+        # 无论走哪条路径，都需要策略提供 stop_words 和 thinking_prefix
+        prompt_output = self.build_prompt(input)
+
+        # ---- 4. 回退：策略手动模板 ----
         if prompt is None:
-            # 回退：如果有 tools，注入到 system prompt（含 tool_choice 行为指令）
             if input.tools:
                 injected = self.inject_tools_into_messages(
                     input.messages, input.tools, input.tool_choice,
                 )
                 fallback_input = dataclass_replace(input, messages=injected)
                 prompt_output = self.build_prompt(fallback_input)
-            else:
-                prompt_output = self.build_prompt(input)
             prompt = prompt_output.prompt
         else:
-            # 使用原生模板时，仍需获取 stop_words
-            prompt_output = PromptOutput(
-                prompt=prompt,
-                thinking_prefix=None,
-                stop_words=input.stop or self.get_default_stop_words() or None,
-            )
+            # 原生模板路径：若策略声明了 thinking_prefix 但原生模板字符串
+            # 未包含该标记（原生模板不支持 enable_thinking 参数），则追加
+            if (prompt_output.thinking_prefix
+                    and isinstance(prompt, str)
+                    and not prompt.rstrip().endswith(prompt_output.thinking_prefix)):
+                prompt = prompt.rstrip("\n") + "\n" + prompt_output.thinking_prefix
 
+        # ---- 5. 构建生成参数 ----
         gen_kwargs = {
             "max_tokens": input.max_tokens,
             "temperature": input.temperature,
             "top_p": input.top_p,
+            "enable_thinking": input.enable_thinking,
         }
+        if input.top_k is not None:
+            gen_kwargs["top_k"] = input.top_k
         if prompt_output.stop_words:
             gen_kwargs["stop"] = prompt_output.stop_words
 
+        # ---- 6. 调用引擎生成 ----
         if input.stream:
             iterator = self._wrap_stream(
                 engine.generate(prompt, stream=True, **gen_kwargs),
-                prompt_output.thinking_prefix if not used_native_template else None,
+                prompt_output.thinking_prefix,
             )
             return StrategyOutput(
                 stream_iterator=iterator,
@@ -386,7 +422,7 @@ class LLMStrategy(ABC):
         else:
             text = engine.generate(prompt, stream=False, **gen_kwargs)
             final_text = text
-            if not used_native_template and prompt_output.thinking_prefix:
+            if prompt_output.thinking_prefix:
                 final_text = prompt_output.thinking_prefix + text
 
             # 解析工具调用（仅当 tools 存在且 tool_choice != "none"）

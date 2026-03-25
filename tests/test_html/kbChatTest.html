@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>聊天补全测试工具</title>
+    <title>知识库对话测试工具</title>
     <style>
         * {
             margin: 0;
@@ -13,7 +13,7 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1a5f7a 0%, #159895 100%);
             padding: 20px;
             line-height: 1.6;
             min-height: 100vh;
@@ -91,8 +91,8 @@
 
         input:focus, textarea:focus, select:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: #159895;
+            box-shadow: 0 0 0 3px rgba(21, 152, 149, 0.1);
         }
 
         textarea {
@@ -113,7 +113,6 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            margin-bottom: 10px;
         }
 
         .checkbox-group input[type="checkbox"] {
@@ -126,7 +125,7 @@
         }
 
         button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1a5f7a 0%, #159895 100%);
             color: white;
             border: none;
             padding: 12px 20px;
@@ -140,7 +139,7 @@
 
         button:hover:not(:disabled) {
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 4px 12px rgba(21, 152, 149, 0.4);
         }
 
         button:disabled {
@@ -202,7 +201,7 @@
         }
 
         .message-user .message-content {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1a5f7a 0%, #159895 100%);
             color: white;
             border-bottom-right-radius: 4px;
         }
@@ -214,9 +213,20 @@
             border-bottom-left-radius: 4px;
         }
 
+        .streaming-cursor::after {
+            content: '▋';
+            animation: blink 1s infinite;
+            color: #159895;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
         .think-block {
-            background: #f0f0f0;
-            border-left: 3px solid #667eea;
+            background: #e8f5f4;
+            border-left: 3px solid #159895;
             padding: 10px 15px;
             margin: 8px 0;
             font-style: italic;
@@ -229,20 +239,141 @@
             content: '💭 思考中...';
             display: block;
             font-weight: 600;
-            color: #667eea;
+            color: #159895;
             margin-bottom: 5px;
             font-style: normal;
         }
 
-        .streaming-cursor::after {
-            content: '▋';
-            animation: blink 1s infinite;
-            color: #667eea;
+        /* 知识库信息面板 */
+        .kb-info-panel {
+            background: #e8f5f4;
+            border: 1px solid #b2dfdb;
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 10px;
+            font-size: 13px;
         }
 
-        @keyframes blink {
-            0%, 50% { opacity: 1; }
-            51%, 100% { opacity: 0; }
+        .kb-info-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            cursor: pointer;
+        }
+
+        .kb-info-title {
+            font-weight: 600;
+            color: #00695c;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .kb-info-toggle {
+            color: #00695c;
+            font-size: 12px;
+        }
+
+        .kb-info-content {
+            display: none;
+        }
+
+        .kb-info-content.expanded {
+            display: block;
+        }
+
+        .kb-info-row {
+            display: flex;
+            margin-bottom: 6px;
+        }
+
+        .kb-info-label {
+            color: #00695c;
+            font-weight: 500;
+            min-width: 80px;
+        }
+
+        .kb-info-value {
+            color: #004d40;
+        }
+
+        /* 引用来源 */
+        .sources-list {
+            margin-top: 10px;
+        }
+
+        .source-item {
+            background: white;
+            border: 1px solid #b2dfdb;
+            border-radius: 6px;
+            padding: 10px;
+            margin-bottom: 8px;
+        }
+
+        .source-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .source-index {
+            background: #159895;
+            color: white;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .source-doc {
+            font-weight: 500;
+            color: #00695c;
+            font-size: 13px;
+        }
+
+        .source-chapter {
+            color: #6c757d;
+            font-size: 12px;
+        }
+
+        .source-score {
+            background: #e0f2f1;
+            color: #00695c;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+        }
+
+        .source-preview {
+            font-size: 12px;
+            color: #495057;
+            line-height: 1.5;
+            max-height: 60px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* 输入区域 */
+        .input-area {
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-area textarea {
+            flex: 1;
+            min-height: 50px;
+            max-height: 120px;
+        }
+
+        .input-area button {
+            width: auto;
+            padding: 12px 24px;
         }
 
         /* 状态提示 */
@@ -285,23 +416,6 @@
             to { transform: rotate(360deg); }
         }
 
-        /* 输入区域 */
-        .input-area {
-            display: flex;
-            gap: 10px;
-        }
-
-        .input-area textarea {
-            flex: 1;
-            min-height: 50px;
-            max-height: 120px;
-        }
-
-        .input-area button {
-            width: auto;
-            padding: 12px 24px;
-        }
-
         /* 元数据 */
         .metadata {
             display: flex;
@@ -334,7 +448,7 @@
     <div class="container">
         <!-- 左侧配置面板 -->
         <div class="sidebar">
-            <h1>🚀 聊天补全测试</h1>
+            <h1>📚 知识库对话测试</h1>
 
             <div class="config-section">
                 <h2>🔧 基础配置</h2>
@@ -345,12 +459,55 @@
 
                 <div class="form-group">
                     <label for="modelName">模型名称（留空自动获取）</label>
-                    <input type="text" id="modelName" placeholder="例如：llama-2-7b-chat">
+                    <input type="text" id="modelName" placeholder="例如：glm-4-9b">
                 </div>
 
                 <div class="form-group">
-                    <label for="systemPrompt">系统提示词</label>
-                    <textarea id="systemPrompt">你是一个有帮助的助手。</textarea>
+                    <label for="collectionName">知识库名称</label>
+                    <input type="text" id="collectionName" value="test_knowledge_base" placeholder="Milvus Collection 名称">
+                </div>
+            </div>
+
+            <div class="config-section">
+                <h2>🔍 检索配置</h2>
+                <div class="inline-group">
+                    <div class="form-group">
+                        <label for="searchMode">检索模式</label>
+                        <select id="searchMode">
+                            <option value="hybrid" selected>混合检索</option>
+                            <option value="dense">语义检索</option>
+                            <option value="sparse">关键词检索</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="searchTopK">检索数量</label>
+                        <input type="number" id="searchTopK" value="5" min="1" max="20">
+                    </div>
+                </div>
+
+                <div class="inline-group">
+                    <div class="form-group">
+                        <label for="queryRewrite">Query改写</label>
+                        <select id="queryRewrite">
+                            <option value="auto" selected>自动</option>
+                            <option value="always">始终改写</option>
+                            <option value="never">不改写</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="scoreThreshold">分数阈值</label>
+                        <input type="number" id="scoreThreshold" value="0.3" min="0" max="1" step="0.1">
+                    </div>
+                </div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" id="searchEnabled" checked>
+                    <label for="searchEnabled">启用检索</label>
+                </div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" id="rerank" checked>
+                    <label for="rerank">启用重排序</label>
                 </div>
             </div>
 
@@ -359,9 +516,8 @@
                 <div class="inline-group">
                     <div class="form-group">
                         <label for="maxTokens">Max Tokens</label>
-                        <input type="number" id="maxTokens" value="4096" min="1" max="8192">
+                        <input type="number" id="maxTokens" value="1024" min="1" max="8192">
                     </div>
-
                     <div class="form-group">
                         <label for="temperature">Temperature</label>
                         <input type="number" id="temperature" value="0.7" min="0" max="2" step="0.1">
@@ -369,13 +525,13 @@
                 </div>
 
                 <div class="checkbox-group">
-                    <input type="checkbox" id="streamMode" checked>
-                    <label for="streamMode">流式输出</label>
+                    <input type="checkbox" id="enableThinking" checked>
+                    <label for="enableThinking">启用深度思考</label>
                 </div>
 
                 <div class="checkbox-group">
-                    <input type="checkbox" id="enableThinking" checked>
-                    <label for="enableThinking">启用深度思考</label>
+                    <input type="checkbox" id="returnSources" checked>
+                    <label for="returnSources">返回引用来源</label>
                 </div>
             </div>
 
@@ -391,7 +547,7 @@
                         <span>⏱</span> 耗时: <span id="elapsedTime">0</span>ms
                     </div>
                     <div class="metadata-item">
-                        <span>📊</span> Tokens: <span id="tokenCount">0</span>
+                        <span>🔍</span> 检索: <span id="searchTime">0</span>ms
                     </div>
                 </div>
             </div>
@@ -405,11 +561,11 @@
                 <div class="message message-assistant">
                     <div class="message-role">助手</div>
                     <div class="message-content">
-                        👋 你好！我是AI助手。请输入你的问题，我会尽力为你解答。
+                        👋 你好！我是知识库助手。请输入你的问题，我会基于知识库为你提供答案。
                         <br><br>
-                        💡 提示：
-                        <br>• 支持多轮对话，保留历史上下文
-                        <br>• 启用深度思考可看到模型推理过程
+                        📖 当前知识库包含：
+                        <br>• Nginx配置指南
+                        <br>• 公司规章制度
                     </div>
                 </div>
             </div>
@@ -425,7 +581,6 @@
         // 对话历史
         let chatHistory = [];
         let isStreaming = false;
-        let tokenCount = 0;
         let startTime = 0;
 
         // 发送消息
@@ -447,7 +602,6 @@
             // 显示状态
             showStatus('正在处理...', 'pending');
             isStreaming = true;
-            tokenCount = 0;
             startTime = Date.now();
             document.getElementById('sendBtn').disabled = true;
 
@@ -459,24 +613,26 @@
                     document.getElementById('modelName').value = config.model;
                 }
 
-                // 构建消息列表（包含 system prompt）
-                const messages = [
-                    { role: 'system', content: config.systemPrompt },
-                    ...chatHistory
-                ];
-
                 // 发送请求
-                showStatus('生成回答中...', 'pending');
-                const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
+                showStatus('检索知识库...', 'pending');
+                const response = await fetch(`${config.baseUrl}/v1/kb/chat/completions`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         model: config.model,
-                        messages: messages,
-                        stream: config.stream,
+                        collection_name: config.collectionName,
+                        messages: chatHistory,
+                        stream: true,
+                        search_enabled: config.searchEnabled,
+                        search_mode: config.searchMode,
+                        search_top_k: config.searchTopK,
+                        rerank: config.rerank,
+                        score_threshold: config.scoreThreshold,
+                        query_rewrite: config.queryRewrite,
                         max_tokens: config.maxTokens,
                         temperature: config.temperature,
                         enable_thinking: config.enableThinking,
+                        return_sources: config.returnSources,
                     })
                 });
 
@@ -485,29 +641,15 @@
                     throw new Error(`HTTP ${response.status}: ${errorText}`);
                 }
 
-                // 处理响应
-                let assistantContent = '';
-                if (config.stream) {
-                    assistantContent = await handleStreamResponse(response);
-                } else {
-                    assistantContent = await handleNonStreamResponse(response);
-                }
-
-                // 添加到历史
-                if (assistantContent) {
-                    chatHistory.push({ role: 'assistant', content: assistantContent });
-                }
+                // 处理流式响应
+                showStatus('生成回答中...', 'pending');
+                await handleStreamResponse(response, config.returnSources);
 
                 // 更新元数据
                 const elapsed = Date.now() - startTime;
                 document.getElementById('elapsedTime').textContent = elapsed;
-                document.getElementById('tokenCount').textContent = tokenCount;
                 document.getElementById('metadata').style.display = 'flex';
                 showStatus('完成', 'success');
-
-                // 输出完整响应到控制台
-                console.log('=== Chat Completion 完整响应 ===');
-                console.log('助手回复:', assistantContent);
 
             } catch (error) {
                 console.error('请求错误:', error);
@@ -520,27 +662,30 @@
         }
 
         // 处理流式响应
-        async function handleStreamResponse(response) {
+        async function handleStreamResponse(response, returnSources) {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
-            let buffer = '';
+
             let assistantContent = '';
+            let reasoningContent = '';
+            let kbInfo = null;
             let messageElement = null;
+            let thinkBlockEl = null;
+            let contentEl = null;
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
 
                 for (const line of lines) {
-                    const trimmedLine = line.trim();
-                    if (!trimmedLine.startsWith('data: ')) continue;
+                    if (!line.startsWith('data: ')) continue;
 
-                    const dataStr = trimmedLine.slice(6);
+                    const dataStr = line.slice(6);
                     if (dataStr === '[DONE]') {
+                        // 完成，移除光标
                         if (messageElement) {
                             messageElement.classList.remove('streaming-cursor');
                         }
@@ -549,63 +694,74 @@
 
                     try {
                         const data = JSON.parse(dataStr);
+
+                        // 获取 kb_info
+                        if (data.kb_info && !kbInfo) {
+                            kbInfo = data.kb_info;
+                            if (kbInfo.search_took_ms) {
+                                document.getElementById('searchTime').textContent = 
+                                    Math.round(kbInfo.search_took_ms);
+                            }
+                        }
+
+                        // 获取内容
                         const delta = data.choices?.[0]?.delta || {};
+                        const reasoning = delta.reasoning_content || '';
                         const content = delta.content || '';
 
+                        // 首次收到内容时创建消息容器
+                        if ((reasoning || content) && !messageElement) {
+                            messageElement = appendMessage('assistant', '', true);
+                            messageElement.innerHTML = '';
+                        }
+
+                        // 思考内容 → think-block 区域
+                        if (reasoning) {
+                            if (!thinkBlockEl) {
+                                thinkBlockEl = document.createElement('div');
+                                thinkBlockEl.className = 'think-block';
+                                messageElement.appendChild(thinkBlockEl);
+                            }
+                            reasoningContent += reasoning;
+                            thinkBlockEl.textContent = reasoningContent;
+                        }
+
+                        // 正文内容 → content 区域
                         if (content) {
-                            if (!messageElement) {
-                                messageElement = appendMessage('assistant', '', true);
+                            if (!contentEl) {
+                                contentEl = document.createElement('div');
+                                messageElement.appendChild(contentEl);
                             }
                             assistantContent += content;
-                            tokenCount++;
-
-                            // 格式化 <think> 标签
-                            const formattedContent = formatThinkBlocks(assistantContent);
-                            messageElement.innerHTML = formattedContent;
+                            contentEl.textContent = assistantContent;
                         }
+
                     } catch (e) {
                         console.warn('解析 JSON 失败:', dataStr);
                     }
                 }
             }
 
-            if (messageElement) {
-                messageElement.classList.remove('streaming-cursor');
+            // 添加到历史
+            if (assistantContent) {
+                chatHistory.push({ role: 'assistant', content: assistantContent });
             }
 
-            return assistantContent;
-        }
+            // 输出完整响应到控制台，方便调试
+            console.log('=== KB Chat 完整响应 ===');
+            console.log('助手回复:', assistantContent);
+            console.log('知识库信息:', JSON.stringify(kbInfo, null, 2));
 
-        // 处理非流式响应
-        async function handleNonStreamResponse(response) {
-            const data = await response.json();
-            const content = data.choices?.[0]?.message?.content || '';
-
-            tokenCount = content.length;
-
-            const formattedContent = formatThinkBlocks(content);
-            const messageElement = appendMessage('assistant', '', false);
-            messageElement.innerHTML = formattedContent;
-
-            console.log('完整响应数据:', JSON.stringify(data, null, 2));
-
-            return content;
-        }
-
-        // 格式化思考块
-        function formatThinkBlocks(content) {
-            return content
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/&lt;think&gt;/g, '<div class="think-block">')
-                .replace(/&lt;\/think&gt;/g, '</div>');
+            // 显示知识库信息（仅在有 kbInfo 时显示）
+            if (kbInfo && returnSources) {
+                appendKBInfo(kbInfo);
+            }
         }
 
         // 添加消息到界面
         function appendMessage(role, content, streaming = false) {
             const chatMessages = document.getElementById('chatMessages');
-
+            
             const messageDiv = document.createElement('div');
             messageDiv.className = `message message-${role}`;
 
@@ -630,16 +786,112 @@
             return contentDiv;
         }
 
+        // 添加知识库信息面板
+        function appendKBInfo(kbInfo) {
+            const chatMessages = document.getElementById('chatMessages');
+            const lastMessage = chatMessages.lastElementChild;
+
+            const panel = document.createElement('div');
+            panel.className = 'kb-info-panel';
+
+            const header = document.createElement('div');
+            header.className = 'kb-info-header';
+            header.onclick = () => {
+                const content = panel.querySelector('.kb-info-content');
+                content.classList.toggle('expanded');
+                toggle.textContent = content.classList.contains('expanded') ? '收起 ▲' : '展开 ▼';
+            };
+
+            const title = document.createElement('div');
+            title.className = 'kb-info-title';
+            title.innerHTML = `📋 知识库信息`;
+
+            const toggle = document.createElement('div');
+            toggle.className = 'kb-info-toggle';
+            toggle.textContent = '展开 ▼';
+
+            header.appendChild(title);
+            header.appendChild(toggle);
+
+            const content = document.createElement('div');
+            content.className = 'kb-info-content';
+
+            // 基本信息
+            content.innerHTML = `
+                <div class="kb-info-row">
+                    <span class="kb-info-label">意图识别:</span>
+                    <span class="kb-info-value">${kbInfo.intent || 'N/A'}</span>
+                </div>
+                <div class="kb-info-row">
+                    <span class="kb-info-label">是否检索:</span>
+                    <span class="kb-info-value">${kbInfo.search_performed ? '是' : '否'}</span>
+                </div>
+                <div class="kb-info-row">
+                    <span class="kb-info-label">检索Query:</span>
+                    <span class="kb-info-value">${kbInfo.search_query || 'N/A'}</span>
+                </div>
+                <div class="kb-info-row">
+                    <span class="kb-info-label">是否改写:</span>
+                    <span class="kb-info-value">${kbInfo.query_rewritten ? '是' : '否'}</span>
+                </div>
+                ${kbInfo.original_query ? `
+                <div class="kb-info-row">
+                    <span class="kb-info-label">原始问题:</span>
+                    <span class="kb-info-value">${kbInfo.original_query}</span>
+                </div>
+                ` : ''}
+            `;
+
+            // 引用来源
+            if (kbInfo.sources && kbInfo.sources.length > 0) {
+                const sourcesList = document.createElement('div');
+                sourcesList.className = 'sources-list';
+                sourcesList.innerHTML = '<div style="font-weight: 600; color: #00695c; margin-bottom: 8px;">📖 引用来源</div>';
+
+                kbInfo.sources.forEach(source => {
+                    const sourceItem = document.createElement('div');
+                    sourceItem.className = 'source-item';
+                    sourceItem.innerHTML = `
+                        <div class="source-header">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="source-index">${source.index}</span>
+                                <span class="source-doc">${source.doc_name}</span>
+                                <span class="source-chapter">${source.chapter}</span>
+                            </div>
+                            <span class="source-score">相关度: ${(source.score * 100).toFixed(1)}%</span>
+                        </div>
+                        <div class="source-preview">${source.content_preview}</div>
+                    `;
+                    sourcesList.appendChild(sourceItem);
+                });
+
+                content.appendChild(sourcesList);
+            }
+
+            panel.appendChild(header);
+            panel.appendChild(content);
+            lastMessage.appendChild(panel);
+
+            // 滚动到底部
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
         // 获取配置
         function getConfig() {
             return {
                 baseUrl: document.getElementById('baseUrl').value.trim(),
                 model: document.getElementById('modelName').value.trim(),
-                systemPrompt: document.getElementById('systemPrompt').value.trim(),
+                collectionName: document.getElementById('collectionName').value.trim(),
+                searchEnabled: document.getElementById('searchEnabled').checked,
+                searchMode: document.getElementById('searchMode').value,
+                searchTopK: parseInt(document.getElementById('searchTopK').value),
+                rerank: document.getElementById('rerank').checked,
+                scoreThreshold: parseFloat(document.getElementById('scoreThreshold').value),
+                queryRewrite: document.getElementById('queryRewrite').value,
                 maxTokens: parseInt(document.getElementById('maxTokens').value),
                 temperature: parseFloat(document.getElementById('temperature').value),
-                stream: document.getElementById('streamMode').checked,
                 enableThinking: document.getElementById('enableThinking').checked,
+                returnSources: document.getElementById('returnSources').checked,
             };
         }
 
@@ -660,11 +912,12 @@
             return llmModel.id;
         }
 
+
         // 显示状态
         function showStatus(text, type) {
             const statusBar = document.getElementById('statusBar');
             const statusText = document.getElementById('statusText');
-
+            
             statusBar.classList.remove('hidden', 'success', 'error');
             if (type === 'success') {
                 statusBar.classList.add('success');
@@ -672,7 +925,7 @@
             } else if (type === 'error') {
                 statusBar.classList.add('error');
             }
-
+            
             statusText.textContent = text;
         }
 
@@ -684,7 +937,7 @@
                 <div class="message message-assistant">
                     <div class="message-role">助手</div>
                     <div class="message-content">
-                        👋 对话已清空。请输入你的问题，我会尽力为你解答。
+                        👋 对话已清空。请输入你的问题，我会基于知识库为你提供答案。
                     </div>
                 </div>
             `;

@@ -191,15 +191,17 @@ Config = ConfigManager()
 def init_config(config_path: str = "configs/config.yaml") -> ConfigManager:
     """
     初始化配置系统
-    
+
+    由于 ConfigManager 使用元类单例，直接操作全局实例即可。
+    更新配置路径、清空缓存并预加载所有配置以验证正确性。
+
     Args:
         config_path: 配置文件路径
-        
+
     Returns:
         ConfigManager: 配置管理器实例
     """
-    global Config
-    Config = ConfigManager(config_path)
-    Config.preload_all()  # 预加载验证配置
-    logger.info(f"配置系统初始化完成: {config_path}")
+    Config.reload_config(config_path)
+    Config.preload_all()
+    logger.info("配置系统初始化完成: {}", config_path)
     return Config

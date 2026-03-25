@@ -186,6 +186,134 @@ class ChatService:
             return []
         return strategy.parse_tool_calls(text)
 
+    # 动态预算安全余量（预留给模板标记、特殊 token 等）
+    _SAFETY_MARGIN_TOKENS = 256
+    # 当所有探测方式都失败时的全局兜底值
+    _FALLBACK_MAX_TOKENS = 4096
+
+    def get_context_window(self, model_name: Optional[str]) -> Optional[int]:
+        """获取指定模型的上下文窗口大小
+
+        优先级：
+        1. 模型配置 context_window（手动指定，最高优先级）
+        2. 引擎自动探测（从模型 config.json 读取 max_position_embeddings 等）
+
+        Args:
+            model_name: 模型名称
+
+        Returns:
+            上下文窗口 token 数，无法获取时返回 None
+        """
+        # 1. 先查模型配置的显式声明
+        llm_config = REGISTRY.get_llm_config(model_name)
+        if llm_config and llm_config.context_window:
+            return llm_config.context_window
+
+        # 2. 引擎自动探测
+        engine = REGISTRY.get_llm(model_name)
+        if engine is not None:
+            detected = engine.get_context_window()
+            if detected is not None:
+                return detected
+
+        return None
+
+    def _get_hardware_max_tokens(self, model_name: Optional[str]) -> Optional[int]:
+        """获取硬件级硬上限（gen_params.max_tokens）
+
+        gen_params.max_tokens 的语义是：你的硬件实际能承受的最大单次输出 token 数。
+        动态预算的结果不应超过此值，否则可能因 KV cache 分配导致 OOM。
+
+        Args:
+            model_name: 模型名称
+
+        Returns:
+            硬件上限值，未配置时返回 None
+        """
+        llm_config = REGISTRY.get_llm_config(model_name)
+        if llm_config and llm_config.gen_params:
+            val = llm_config.gen_params.get("max_tokens")
+            if val is not None:
+                return int(val)
+        return None
+
+    def resolve_max_tokens(
+        self,
+        model_name: Optional[str],
+        prompt_tokens: int,
+        client_max_tokens: Optional[int] = None,
+    ) -> int:
+        """动态计算本次请求的 max_tokens
+
+        三层保护机制：
+        1. context_window 动态预算 → 不超出模型上下文限制
+        2. gen_params.max_tokens 硬上限 → 不超出硬件承受能力（防 OOM）
+        3. 客户端传入值 → 尊重客户端意愿
+
+        最终结果 = min(动态预算, 硬件上限, 客户端值)
+
+        配置指南：
+        - context_window: 模型理论上下文窗口（可自动探测，一般不用配）
+        - gen_params.max_tokens: 你的显卡实际能承受的最大输出长度（建议配置）
+          例如 8GB 显存跑 1.7B 模型，建议配 2048~4096
+
+        Args:
+            model_name: 模型名称
+            prompt_tokens: 本次请求的输入 token 数
+            client_max_tokens: 客户端显式传入的 max_tokens（可选）
+
+        Returns:
+            本次请求应使用的 max_tokens 值（保证 >= 1）
+        """
+        # 收集所有候选上限
+        candidates: list[int] = []
+
+        # 1. 动态预算：context_window - prompt_tokens - safety_margin
+        context_window = self.get_context_window(model_name)
+        if context_window is not None and prompt_tokens > 0:
+            available = context_window - prompt_tokens - self._SAFETY_MARGIN_TOKENS
+            if available > 0:
+                candidates.append(available)
+
+        # 2. 硬件上限：gen_params.max_tokens
+        hw_limit = self._get_hardware_max_tokens(model_name)
+        if hw_limit is not None:
+            candidates.append(hw_limit)
+
+        # 3. 客户端显式传入值
+        if client_max_tokens is not None:
+            candidates.append(client_max_tokens)
+
+        # 取所有候选值中的最小值
+        if candidates:
+            resolved = max(min(candidates), 1)
+        else:
+            resolved = self._FALLBACK_MAX_TOKENS
+
+        logger.debug(
+            "resolve_max_tokens: model={} prompt_tokens={} context_window={} "
+            "hw_limit={} client={} → resolved={}",
+            model_name, prompt_tokens, context_window, hw_limit,
+            client_max_tokens, resolved,
+        )
+        return resolved
+
+    def strip_tool_call_text(self, text: str, tool_calls: list[dict]) -> str:
+        """从模型输出中移除已解析的工具调用文本，返回干净的 content
+
+        Router 层不应直接依赖 Strategy 层的内部函数，
+        通过 Service 层暴露此能力，保持分层架构。
+
+        Args:
+            text: 模型生成的完整文本
+            tool_calls: 已解析的 OpenAI 格式 tool_calls 列表
+
+        Returns:
+            移除工具调用文本后的干净字符串
+        """
+        from strategies.base import _strip_tool_call_text
+        return _strip_tool_call_text(text, tool_calls)
+
     def _build_input(
         self,
         model_name: Optional[str],
@@ -194,6 +322,7 @@ class ChatService:
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.95,
+        top_k: Optional[int] = None,
         stop: Optional[List[str]] = None,
         enable_thinking: Optional[bool] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -219,6 +348,7 @@ class ChatService:
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            top_k=top_k,
             stop=stop,
             enable_thinking=enable_thinking,
             tools=tools,

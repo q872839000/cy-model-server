@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from api.openai_router import router as openai_router
 from api.rag_router import router as rag_router
 from api.kb_chat_router import router as kb_chat_router
+from api.anthropic_router import router as anthropic_router
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -183,6 +184,10 @@ def _setup_middleware(app: FastAPI, settings: AppSettings) -> None:
 def _setup_exception_handlers(app: FastAPI) -> None:
 	"""设置异常处理器"""
 
+	def _is_anthropic_request(req: Request) -> bool:
+		"""判断请求是否来自 Anthropic API 端点"""
+		return req.url.path.startswith("/v1/messages")
+
 	@app.exception_handler(RequestValidationError)
 	async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
 		try:
@@ -211,16 +216,23 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 				exc.errors(),
 			)
 
-		# OpenAI 兼容错误格式：拼接可读的验证错误信息
+		# 拼接可读的验证错误信息
 		error_messages = []
 		for err in exc.errors():
 			loc = " -> ".join(str(l) for l in err.get("loc", []))
 			msg = err.get("msg", "")
 			error_messages.append(f"{loc}: {msg}" if loc else msg)
+		error_msg = "; ".join(error_messages) or "Invalid request parameters"
+		# Anthropic 请求使用 Anthropic 错误格式
+		if _is_anthropic_request(request):
+			return ORJSONResponse(
+				{"type": "error", "error": {"type": "invalid_request_error", "message": error_msg}},
+				status_code=400,
+			)
 		return ORJSONResponse(
 			{
 				"error": {
-					"message": "; ".join(error_messages) or "Invalid request parameters",
+					"message": error_msg,
 					"type": "invalid_request_error",
 					"param": None,
 					"code": None,
@@ -246,6 +258,12 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 		error_type = "invalid_request_error" if status_code < 500 else "server_error"
 		# 额外提取 param 信息（UnsupportedParameterError 携带）
 		param = exc.details.get("param") if exc.details else None
+		if _is_anthropic_request(request):
+			a_type = "not_found_error" if status_code == 404 else error_type
+			return ORJSONResponse(
+				{"type": "error", "error": {"type": a_type, "message": exc.message}},
+				status_code=status_code,
+			)
 		return ORJSONResponse(
 			{
 				"error": {
@@ -274,6 +292,11 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 			error_type = "server_error"
 		else:
 			error_type = "invalid_request_error"
+		if _is_anthropic_request(request):
+			return ORJSONResponse(
+				{"type": "error", "error": {"type": error_type, "message": exc.detail}},
+				status_code=exc.status_code,
+			)
 		return ORJSONResponse(
 			{
 				"error": {
@@ -289,6 +312,11 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 	@app.exception_handler(Exception)
 	async def unhandled_exception_handler(request: Request, exc: Exception):
 		logger.exception("Unhandled error: {} {}", request.method, request.url)
+		if _is_anthropic_request(request):
+			return ORJSONResponse(
+				{"type": "error", "error": {"type": "api_error", "message": "Internal server error"}},
+				status_code=500,
+			)
 		return ORJSONResponse(
 			{
 				"error": {
@@ -309,6 +337,7 @@ app = create_app()
 app.include_router(openai_router)
 app.include_router(rag_router)
 app.include_router(kb_chat_router)
+app.include_router(anthropic_router)
 
 
 

@@ -14,7 +14,7 @@ from strategies.base import LLMStrategy, GenericChatStrategy
 from strategies.qwen import QwenBaseStrategy, Qwen2Strategy, Qwen3Strategy
 
 # GLM 系列
-from strategies.glm import GLMBaseStrategy, GLM4Strategy, GLM4_0414Strategy, GLM4Z1Strategy
+from strategies.glm import GLMBaseStrategy, GLM4Strategy, GLM4Z1Strategy
 
 # Deepseek 系列
 from strategies.deepseek import DeepseekBaseStrategy, DeepseekR1Strategy
@@ -40,7 +40,6 @@ class StrategyFactory:
         "qwen": QwenBaseStrategy,
         
         # GLM 系列（精确匹配）
-        "glm4-0414": GLM4_0414Strategy,
         "glm4-z1": GLM4Z1Strategy,
         "glm4": GLM4Strategy,
         
@@ -112,8 +111,6 @@ class StrategyFactory:
                 resolved_key = "qwen"
             elif "glm" in key and "z1" in key:
                 resolved_key = "glm4-z1"
-            elif "glm" in key and "0414" in key:
-                resolved_key = "glm4-0414"
             elif "glm4" in key:
                 resolved_key = "glm4"
             elif "glm" in key:

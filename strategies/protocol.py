@@ -38,6 +38,7 @@ class StrategyInput:
     max_tokens: int = 256
     temperature: float = 0.7
     top_p: float = 0.95
+    top_k: Optional[int] = None
     stop: Optional[List[str]] = None
     enable_thinking: bool = False
     tools: Optional[List[Dict[str, Any]]] = None
@@ -71,6 +72,7 @@ class StrategyInput:
             max_tokens=kwargs.pop("max_tokens", 256),
             temperature=kwargs.pop("temperature", 0.7),
             top_p=kwargs.pop("top_p", 0.95),
+            top_k=kwargs.pop("top_k", None),
             stop=kwargs.pop("stop", None),
             enable_thinking=kwargs.pop("enable_thinking", False),
             tools=kwargs.pop("tools", None),

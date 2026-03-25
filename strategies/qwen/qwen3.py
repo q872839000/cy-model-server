@@ -11,7 +11,7 @@ class Qwen3Strategy(QwenBaseStrategy):
     
     Qwen3 支持 enable_thinking 参数控制深度思考模式：
     - enable_thinking=True: 开启深度思考，模型自动生成思考内容
-    - enable_thinking=False: 关闭深度思考，通过添加空思考标签跳过思考
+    - enable_thinking=False: 关闭深度思考，通过空思考标签通知模型跳过思考
     
     参考: https://www.modelscope.cn/models/Qwen/Qwen3-4B
     """
@@ -40,6 +40,7 @@ class Qwen3Strategy(QwenBaseStrategy):
         if enable_thinking:
             parts.append(f"{IM_START}assistant\n{THINK_START}")
         else:
+            # Qwen3 官方要求：关闭思考需添加空的 <think></think> 标签
             parts.append(f"{IM_START}assistant\n{THINK_START}\n\n{THINK_END}\n")
         
         return "\n".join(parts)

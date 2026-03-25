@@ -285,6 +285,24 @@ class ModelRegistry:
 			except Exception as e:
 				logger.error('加载 Reranker 失败: {} -> {}', rerank_cfg.name, e)
 
+		# 加载结果汇总
+		total_configured = len(models_cfg.llms) + len(models_cfg.embeddings) + len(models_cfg.rerankers)
+		total_loaded = len(self._llms) + len(self._embeddings) + len(self._rerankers)
+		failed_count = total_configured - total_loaded
+
+		logger.info(
+			"模型加载完成: LLM={}/{}, Embedding={}/{}, Reranker={}/{}",
+			len(self._llms), len(models_cfg.llms),
+			len(self._embeddings), len(models_cfg.embeddings),
+			len(self._rerankers), len(models_cfg.rerankers),
+		)
+
+		if failed_count > 0:
+			logger.warning("共 {} 个模型加载失败，请检查上方错误日志", failed_count)
+
+		if not self._llms and models_cfg.llms:
+			logger.error("所有 LLM 模型加载失败，聊天功能将不可用")
+
 	def _build_llm_engine(self, cfg: LLMModelConfig, engine: str, device: Optional[str], dtype: Optional[str]) -> LLMEngine:
 		"""构建 LLM 引擎实例。"""
 		if engine == "transformers":

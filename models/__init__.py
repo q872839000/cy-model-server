@@ -7,6 +7,7 @@
 - embedding_schemas: 向量化 API 数据结构
 - rerank_schemas: 重排序 API 数据结构
 - kb_schemas: 知识库相关数据结构
+- anthropic_schemas: Anthropic Messages API 数据结构
 """
 
 from models.chat_schemas import (
@@ -67,6 +68,19 @@ from models.kb_schemas import (
     KBChatDelta,
     KBChatChunkChoice,
     KBChatChunkResponse,
+)
+from models.anthropic_schemas import (
+    AnthropicContentBlock,
+    AnthropicMessage,
+    AnthropicToolDef,
+    AnthropicThinkingConfig,
+    AnthropicToolChoice,
+    AnthropicMessagesRequest,
+    AnthropicUsage,
+    AnthropicResponseContentBlock,
+    AnthropicMessagesResponse,
+    AnthropicErrorDetail,
+    AnthropicErrorResponse,
 )
 from core.config import (
     MilvusConfig,
@@ -136,4 +150,16 @@ __all__ = [
     "RerankRequest",
     "RerankItem",
     "RerankResponse",
+    # Anthropic
+    "AnthropicContentBlock",
+    "AnthropicMessage",
+    "AnthropicToolDef",
+    "AnthropicThinkingConfig",
+    "AnthropicToolChoice",
+    "AnthropicMessagesRequest",
+    "AnthropicUsage",
+    "AnthropicResponseContentBlock",
+    "AnthropicMessagesResponse",
+    "AnthropicErrorDetail",
+    "AnthropicErrorResponse",
 ]

@@ -5,6 +5,38 @@ from typing import List, Dict, Any, Optional, Union, Iterator
 class LLMEngine(ABC):
 	"""LLM 引擎统一接口。负责具体推理实现（transformers/vLLM）。"""
 
+	def get_context_window(self) -> Optional[int]:
+		"""获取模型的上下文窗口大小（token 数）
+
+		自动从已加载模型的 config 中探测，按优先级尝试以下字段：
+		- max_position_embeddings（最通用，Qwen/LLaMA/Mistral/GPT 等均有）
+		- seq_length（GLM 系列）
+		- n_positions（GPT-2 系列）
+		- max_sequence_length（部分旧模型）
+
+		子类可覆盖以实现引擎特定的探测逻辑（如 vLLM 的 max_model_len）。
+
+		Returns:
+			上下文窗口 token 数，无法探测时返回 None
+		"""
+		model = getattr(self, "_model", None)
+		if model is None:
+			# vLLM fallback 场景
+			fallback = getattr(self, "_fallback", None)
+			if fallback is not None:
+				return fallback.get_context_window()
+			return None
+		config = getattr(model, "config", None)
+		if config is None:
+			return None
+		# 按优先级尝试多个常见字段名
+		for attr in ("max_position_embeddings", "seq_length",
+					 "n_positions", "max_sequence_length"):
+			val = getattr(config, attr, None)
+			if val is not None and isinstance(val, int) and val > 0:
+				return val
+		return None
+
 	def apply_chat_template(
 		self,
 		messages: List[Dict[str, Any]],
@@ -15,20 +47,22 @@ class LLMEngine(ABC):
 
 		子类应在 tokenizer 支持 apply_chat_template 时覆盖此方法。
 		返回 None 表示不支持，调用方应回退到 Strategy 层的手动模板。
+		始终返回字符串（tokenize=False），由 _build_inputs 统一编码。
 
 		Args:
 			messages: OpenAI 格式的对话消息列表（含 tool_calls/tool_call_id 等字段）
 			tools: OpenAI 格式的工具定义列表
-			**kwargs: 其他参数（如 enable_thinking、tool_choice）
+			**kwargs: 其他参数（如 enable_thinking）
 
 		Returns:
-			构建好的 prompt 字符串，或 None（不支持时）
+			prompt 字符串，或 None
 		"""
 		return None
 
 	@staticmethod
 	def _build_template_kwargs(
 		tools: Optional[List[Dict[str, Any]]] = None,
+		tokenize: bool = False,
 		**kwargs,
 	) -> Dict[str, Any]:
 		"""构建 tokenizer.apply_chat_template 的通用参数字典
@@ -39,13 +73,14 @@ class LLMEngine(ABC):
 
 		Args:
 			tools: OpenAI 格式的工具定义列表
+			tokenize: 是否返回 token ID（True）或文本（False）
 			**kwargs: 其他参数（enable_thinking, tool_choice 等）
 
 		Returns:
 			可直接传给 tokenizer.apply_chat_template 的参数字典
 		"""
 		template_kwargs: Dict[str, Any] = {
-			"tokenize": False,
+			"tokenize": tokenize,
 			"add_generation_prompt": True,
 		}
 		if tools:
@@ -56,15 +91,17 @@ class LLMEngine(ABC):
 			template_kwargs["enable_thinking"] = enable_thinking
 		return template_kwargs
 
-	def generate(self, prompt: str, stream: bool = False, **kwargs) -> Union[str, Iterator[str]]:
+	def generate(
+		self, prompt: str, stream: bool = False, **kwargs,
+	) -> Union[str, Iterator[str]]:
 		"""
 		生成文本（统一接口，符合 OpenAI 范式）
-		
+
 		Args:
-			prompt: 输入提示词
+			prompt: 输入提示词字符串
 			stream: 是否流式输出
 			**kwargs: 其他生成参数（max_tokens, temperature, top_p 等）
-		
+
 		Returns:
 			stream=False: 返回完整文本字符串
 			stream=True: 返回文本片段的迭代器
@@ -141,12 +178,12 @@ class LLMEngine(ABC):
 			return
 		if buffer:
 			yield buffer
-	
+
 	@abstractmethod
 	def _generate(self, prompt: str, **kwargs) -> str:
 		"""内部非流式生成实现"""
 		...
-	
+
 	def _generate_stream(self, prompt: str, **kwargs) -> Iterator[str]:
 		"""内部流式生成实现（默认回退到非流式）"""
 		yield self._generate(prompt, **kwargs)

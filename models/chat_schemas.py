@@ -203,7 +203,7 @@ class ChatCompletionRequest(BaseModel):
     metadata: Optional[Dict[str, str]] = Field(default=None, description="请求元数据")
 
     # ---- 本服务扩展字段 ----
-    enable_thinking: Optional[bool] = Field(default=True, description="是否启用深度思考模式")
+    enable_thinking: Optional[bool] = Field(default=None, description="是否启用深度思考模式（None 时使用模型配置默认值）")
 
 
 # ==================== Usage ====================

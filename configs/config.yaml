@@ -23,22 +23,47 @@ engine_defaults:
 # - chat_strategy: 对话模板策略，支持细粒度配置：
 #     通用: generic
 #     Qwen系列: qwen (基础) | qwen2 | qwen3 (支持深度思考)
-#     GLM系列: glm (基础) | glm4 | glm4-0414 | glm4-z1 (支持深度思考)
+#     GLM系列: glm (基础) | glm4 (GLM-4系列, 可选思考) | glm4-z1 (GLM-Z1系列, 强制思考)
 #     Deepseek系列: deepseek (基础) | deepseek-r1 (支持深度思考)
 # - engine/device/dtype: 可选，未指定时使用 engine_defaults
-# - gen_params: 生成参数默认值
+# - context_window: 模型上下文窗口大小（token 数）。未配置时自动从模型 config 探测。
+#     服务会根据 context_window 和每次请求的 prompt_tokens 动态计算 max_tokens，
+#     既不压制模型能力，也不会超出上下文限制。
+# - gen_params.max_tokens: 硬件级输出上限（防 OOM）。动态预算结果不会超过此值。
+#     根据显存大小配置，例如 8GB 显存跑 1.7B 模型建议 2048~4096。
+# - gen_params: 其他生成参数默认值（temperature, top_p, top_k 等）
+#
+# 部署与并发配置（所有字段均有默认值，现有配置无需修改）：
+# - replicas: 副本数量（默认 1）。每个副本持有独立引擎实例，可绑定不同 GPU
+# - devices: 各副本绑定的设备列表，如 ['cuda:0', 'cuda:1']。未配置时所有副本使用 device 字段
+# - max_concurrent: 每副本最大并发推理数。transformers 建议 1；vLLM 可设为更大值启用连续批处理
+# - max_queue_size: 每个部署最大排队请求数（默认 64），超出时返回 503
+# - tensor_parallel_size: 张量并行度（仅 vLLM），大于 1 时模型切分到多张 GPU
+# - request_timeout: 单次推理最大等待时间（秒，默认 300）
+# - cancel_grace_period: 取消后宽限时间（秒，默认 5）
 llms:
   - name: Qwen3-1___7B
     path: E:\\Ai\\models\\Qwen\\Qwen3-1___7B
     chat_strategy: qwen3           # 使用 Qwen3 策略，支持 enable_thinking 参数
     enable_thinking: false
-#    gen_params:
-#      max_tokens: 512
+    # context_window: 40960      # 可选：手动指定上下文窗口（未配置时自动探测）
+    gen_params:
+      max_tokens: 2048            # 硬件级上限：8GB 显存的安全输出长度，防止 OOM
 #      temperature: 0.7
 #      top_p: 0.95
-#  - name: Qwen2
-#    path: E:\\Ai\\models\\Qwen\\Qwen2-0___5B-Instruct
-#    chat_strategy: Qwen2           # 使用 Qwen3 策略，支持 enable_thinking 参数
+
+#  多副本 vLLM 部署示例（需要多张 GPU 和 vLLM 安装）：
+#  - name: Qwen3-14B
+#    path: /data/models/Qwen3-14B
+#    chat_strategy: qwen3
+#    engine: vllm                   # 使用 vLLM 引擎，支持连续批处理
+#    enable_thinking: true
+#    replicas: 2                    # 2 个副本，分布在两张 GPU 上
+#    devices: ['cuda:0', 'cuda:1']
+#    max_concurrent: 32             # 每副本最大 32 个并发请求
+#    max_queue_size: 128
+#    gen_params:
+#      max_tokens: 8192
 
 ## Embedding 模型列表
 #embeddings:
@@ -83,24 +108,3 @@ knowledge_base:
   # 使用的模型（引用上面定义的模型名称）
   embedding_model: bge-large-zh
   reranker_model: bge-reranker-base
-
-# ==================== 想定生成配置 ====================
-scenario:
-  # LLM配置
-  llm:
-    temperature: 0.7
-    max_tokens: 2048
-  
-  # 外部API配置（仿真系统接口）
-  external_api:
-    base_url: http://localhost:8080/api
-    equipment_endpoint: /equipment
-    schema_endpoint: /equipment/{equipId}/schema
-    validation_endpoint: /scenario/validate
-    geo_endpoint: /geo/resolve
-    timeout: 30
-  
-  # 记忆管理配置
-  memory:
-    ttl_seconds: 1800  # 30分钟
-    cleanup_interval: 300  # 5分钟

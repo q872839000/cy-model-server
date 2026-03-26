@@ -15,11 +15,48 @@ if TYPE_CHECKING:
 
 # ==================== 通用工具调用解析 ====================
 
-# 常见模型的 tool_call 标记格式（Qwen3 / ChatGLM4 / 通用）
-_TOOL_CALL_TAG_RE = re.compile(
-    r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
-    re.DOTALL,
-)
+# 匹配 <tool_call> 标签的起止位置（不依赖内部 JSON 格式）
+_TOOL_CALL_OPEN_RE = re.compile(r"<tool_call>\s*")
+_TOOL_CALL_CLOSE = "</tool_call>"
+
+
+def _find_json_span(text: str, start: int) -> int | None:
+    """从 text[start] 的 '{' 开始，用括号计数找到配对的 '}'。
+
+    正确处理字符串内的转义引号和嵌套大括号。
+
+    Args:
+        text: 源文本
+        start: '{' 所在的索引位置
+
+    Returns:
+        配对 '}' 的索引位置（含），找不到则返回 None
+    """
+    if start >= len(text) or text[start] != '{':
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for j in range(start, len(text)):
+        ch = text[j]
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_str:
+            escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return j
+    return None
 
 
 def _extract_json_objects(text: str) -> list[dict]:
@@ -34,41 +71,18 @@ def _extract_json_objects(text: str) -> list[dict]:
         if text[i] != "{":
             i += 1
             continue
-        # 找到 '{' 起始，用括号计数定位完整 JSON 块
-        depth = 0
-        in_str = False
-        escape = False
-        start = i
-        for j in range(i, len(text)):
-            ch = text[j]
-            if escape:
-                escape = False
-                continue
-            if ch == "\\" and in_str:
-                escape = True
-                continue
-            if ch == '"' and not escape:
-                in_str = not in_str
-                continue
-            if in_str:
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start : j + 1]
-                    try:
-                        obj = json.loads(candidate)
-                        if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
-                            results.append(obj)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                    i = j + 1
-                    break
-        else:
-            # 未找到匹配的 '}'，跳过此 '{'
-            i = start + 1
+        end = _find_json_span(text, i)
+        if end is None:
+            i += 1
+            continue
+        candidate = text[i : end + 1]
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
+                results.append(obj)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        i = end + 1
     return results
 
 
@@ -85,9 +99,20 @@ def _parse_tool_calls_from_text(text: str) -> list[dict[str, Any]]:
     tool_calls: list[dict[str, Any]] = []
 
     # 策略 1：<tool_call> 标签（优先，因为边界明确不易误判）
-    for match in _TOOL_CALL_TAG_RE.finditer(text):
+    # 使用 _find_json_span 提取标签内的 JSON，正确处理嵌套参数
+    for match in _TOOL_CALL_OPEN_RE.finditer(text):
+        json_start = match.end()
+        if json_start >= len(text) or text[json_start] != '{':
+            continue
+        json_end = _find_json_span(text, json_start)
+        if json_end is None:
+            continue
+        # 验证后面紧跟 </tool_call>（允许中间有空白）
+        after_json = text[json_end + 1:].lstrip()
+        if not after_json.startswith(_TOOL_CALL_CLOSE):
+            continue
         try:
-            obj = json.loads(match.group(1))
+            obj = json.loads(text[json_start : json_end + 1])
             tool_calls.append(_normalize_tool_call(obj))
         except (json.JSONDecodeError, KeyError):
             continue
@@ -129,20 +154,70 @@ def _strip_tool_call_text(text: str, tool_calls: list[dict[str, Any]]) -> str:
     """从模型输出中移除已解析的工具调用文本，返回干净的 content
 
     同时处理 <tool_call> 标签格式和裸 JSON 格式。
+    使用与 _extract_json_objects 一致的括号计数法，正确处理嵌套参数。
     """
-    # 移除 <tool_call>...</tool_call> 标签
-    cleaned = _TOOL_CALL_TAG_RE.sub("", text)
-    # 移除裸 JSON 工具调用（根据 name 精确匹配，避免误删）
+    # 移除 <tool_call>...</tool_call> 标签（使用括号计数法精确定位嵌套 JSON）
+    spans_to_remove: list[tuple[int, int]] = []
+    for match in _TOOL_CALL_OPEN_RE.finditer(text):
+        tag_start = match.start()
+        json_start = match.end()
+        if json_start >= len(text) or text[json_start] != '{':
+            continue
+        json_end = _find_json_span(text, json_start)
+        if json_end is None:
+            continue
+        # 查找 </tool_call> 结束标签
+        after_json = text[json_end + 1:]
+        close_offset = after_json.lstrip()
+        whitespace_len = len(after_json) - len(close_offset)
+        if close_offset.startswith(_TOOL_CALL_CLOSE):
+            tag_end = json_end + 1 + whitespace_len + len(_TOOL_CALL_CLOSE)
+            spans_to_remove.append((tag_start, tag_end))
+
+    # 从后向前移除标签
+    cleaned = text
+    for start, end in reversed(spans_to_remove):
+        cleaned = cleaned[:start] + cleaned[end:]
+
+    # 收集需要移除的函数名集合（每个名称只移除一次）
+    fn_names_to_strip: list[str] = []
     for tc in tool_calls:
         fn_name = tc.get("function", {}).get("name", "")
-        if not fn_name:
+        if fn_name:
+            fn_names_to_strip.append(fn_name)
+
+    if not fn_names_to_strip:
+        return cleaned.strip()
+
+    # 用括号计数法扫描文本，定位并移除匹配的 JSON 工具调用
+    # 从后向前移除，避免偏移量变化
+    spans_to_remove: list[tuple[int, int]] = []
+    i = 0
+    while i < len(cleaned):
+        if cleaned[i] != '{':
+            i += 1
             continue
-        # 找到包含该函数名的 JSON 对象并移除
-        pattern = re.compile(
-            r'\{[^{}]*"name"\s*:\s*"' + re.escape(fn_name) + r'"[^}]*\}',
-            re.DOTALL,
-        )
-        cleaned = pattern.sub("", cleaned, count=1)
+        end = _find_json_span(cleaned, i)
+        if end is None:
+            i += 1
+            continue
+        candidate = cleaned[i : end + 1]
+        try:
+            obj = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            i = end + 1
+            continue
+        if isinstance(obj, dict) and "name" in obj:
+            name = obj["name"]
+            if name in fn_names_to_strip:
+                spans_to_remove.append((i, end + 1))
+                fn_names_to_strip.remove(name)  # 每个名称只移除一次
+        i = end + 1
+
+    # 从后向前移除，保持前面的索引不受影响
+    for start, end in reversed(spans_to_remove):
+        cleaned = cleaned[:start] + cleaned[end:]
+
     return cleaned.strip()
 
 

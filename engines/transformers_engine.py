@@ -8,14 +8,27 @@ from typing import List, Optional, Dict, Any, Iterator, Set, Union
 import torch
 from loguru import logger
 
-from engines.base import LLMEngine, EmbeddingEngine, RerankerEngine
+from engines.base import LLMEngine, EmbeddingEngine, RerankerEngine, EngineCapabilities
 
 # 思考模式标记 — 不应被 special token 剥离逻辑移除
 _THINK_TAGS = {'<think>', '</think>'}
 
 
 class TransformersLLMEngine(LLMEngine):
-    """基于 Hugging Face transformers 的 LLM 引擎封装。"""
+    """基于 Hugging Face transformers 的 LLM 引擎封装。
+
+    并发模型：单副本串行推理（max_concurrent=1），
+    通过部署层多副本实现同模型并行。
+    支持协作式取消：通过 CancelToken + StoppingCriteria 在 decode step 级别中止推理。
+    """
+
+    @classmethod
+    def capabilities(cls) -> EngineCapabilities:
+        return EngineCapabilities(
+            supports_concurrent_requests=False,
+            supports_cancel=True,
+            preferred_max_concurrency=1,
+        )
 
     def __init__(self, model_path: str, dtype: Optional[str] = None,
                  device: Optional[str] = None,
@@ -35,6 +48,13 @@ class TransformersLLMEngine(LLMEngine):
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
+        with self._load_lock:
+            if self._model is not None:
+                return
+            self._do_load()
+
+    def _do_load(self) -> None:
+        """实际执行模型加载（由 _ensure_loaded 在锁内调用）"""
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as e:
@@ -203,8 +223,13 @@ class TransformersLLMEngine(LLMEngine):
                     yield cleaned
 
     def _generate(self, prompt: str, **kwargs) -> str:
-        """返回含 special tokens 的原始解码文本（清理由 generate() 统一处理）"""
+        """返回含 special tokens 的原始解码文本（清理由 generate() 统一处理）
+
+        支持 cancel_token: 传入 CancelToken 时注入 StoppingCriteria，
+        在每个 decode step 检查取消状态，及时释放 GPU。
+        """
         self._ensure_loaded()
+        cancel_token = kwargs.pop('cancel_token', None)
         max_new_tokens = kwargs.get('max_tokens', self.gen_params.get('max_tokens', 128))
         temperature = kwargs.get('temperature', self.gen_params.get('temperature', 0.0))
         top_p = kwargs.get('top_p', self.gen_params.get('top_p', 1.0))
@@ -220,20 +245,36 @@ class TransformersLLMEngine(LLMEngine):
         )
         if top_k is not None:
             gen_kwargs['top_k'] = top_k
-        with torch.no_grad():
-            out = self._model.generate(
-                **inputs,
-                **gen_kwargs,
-            )
+
+        # 注入取消感知的 StoppingCriteria
+        if cancel_token is not None:
+            from engines.cancel import make_stopping_criteria
+            gen_kwargs['stopping_criteria'] = make_stopping_criteria(cancel_token)
+
+        with self._inference_lock:
+            with torch.no_grad():
+                out = self._model.generate(
+                    **inputs,
+                    **gen_kwargs,
+                )
         generated_ids = out[0][input_length:]
         return self._tokenizer.decode(generated_ids, skip_special_tokens=False)
 
     def _generate_stream(self, prompt: str, **kwargs) -> Iterator[str]:
-        """yield 含 special tokens 的原始 chunk（清理由 generate() 统一处理）"""
+        """yield 含 special tokens 的原始 chunk（清理由 generate() 统一处理）
+
+        使用 _inference_lock 保护 GPU 推理，确保并发安全。
+        锁在后台线程中持有（覆盖整个 generate 调用），
+        主线程通过 streamer 迭代器消费输出，不持有锁。
+
+        支持 cancel_token: 注入 StoppingCriteria 实现 decode step 级取消，
+        替代原有的 30s 超时硬等待，大幅缩短取消后的锁释放时间。
+        """
         self._ensure_loaded()
         from transformers import TextIteratorStreamer
         from threading import Thread
 
+        cancel_token = kwargs.pop('cancel_token', None)
         max_new_tokens = kwargs.get('max_tokens', self.gen_params.get('max_tokens', 128))
         temperature = kwargs.get('temperature', self.gen_params.get('temperature', 0.0))
         top_p = kwargs.get('top_p', self.gen_params.get('top_p', 1.0))
@@ -254,12 +295,20 @@ class TransformersLLMEngine(LLMEngine):
         if top_k is not None:
             generation_kwargs['top_k'] = top_k
 
+        # 注入取消感知的 StoppingCriteria
+        if cancel_token is not None:
+            from engines.cancel import make_stopping_criteria
+            generation_kwargs['stopping_criteria'] = make_stopping_criteria(cancel_token)
+
         thread_exception = None
+        grace_period = 5.0  # 取消后的宽限时间（比原来的 30s 短很多）
 
         def _generate_target():
             nonlocal thread_exception
             try:
-                self._model.generate(**generation_kwargs)
+                with self._inference_lock:
+                    with torch.no_grad():
+                        self._model.generate(**generation_kwargs)
             except Exception as e:
                 thread_exception = e
                 streamer.end()
@@ -272,9 +321,15 @@ class TransformersLLMEngine(LLMEngine):
                 if text_chunk:
                     yield text_chunk
         finally:
-            thread.join(timeout=30)
+            # 有 cancel_token 时用短宽限期（StoppingCriteria 会让 generate 快速退出）
+            join_timeout = grace_period if cancel_token is not None else 30.0
+            thread.join(timeout=join_timeout)
             if thread.is_alive():
-                logger.warning("流式生成线程超时未结束 (30s)")
+                logger.warning(
+                    "流式生成线程超时未结束 ({:.0f}s){}",
+                    join_timeout,
+                    "，已注入取消信号" if cancel_token and cancel_token.is_cancelled else "",
+                )
 
         if thread_exception is not None:
             raise RuntimeError(f"流式生成失败: {thread_exception}") from thread_exception
@@ -291,13 +346,16 @@ class TransformersEmbeddingEngine(EmbeddingEngine):
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
-        try:
-            from sentence_transformers import SentenceTransformer
-        except Exception as e:
-            raise RuntimeError("sentence-transformers 未安装") from e
-        device = self.device or ('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info("Loading embedding model {} on device {}", self.model_path, device)
-        self._model = SentenceTransformer(self.model_path, device=device)
+        with self._load_lock:
+            if self._model is not None:
+                return
+            try:
+                from sentence_transformers import SentenceTransformer
+            except Exception as e:
+                raise RuntimeError("sentence-transformers 未安装") from e
+            device = self.device or ('cuda' if torch.cuda.is_available() else 'cpu')
+            logger.info("Loading embedding model {} on device {}", self.model_path, device)
+            self._model = SentenceTransformer(self.model_path, device=device)
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         self._ensure_loaded()
@@ -316,13 +374,16 @@ class TransformersRerankerEngine(RerankerEngine):
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
-        try:
-            from sentence_transformers import CrossEncoder
-        except Exception as e:
-            raise RuntimeError("sentence-transformers CrossEncoder 不可用") from e
-        device = self.device or ('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info("Loading reranker CrossEncoder {} on device {}", self.model_path, device)
-        self._model = CrossEncoder(self.model_path, device=device)
+        with self._load_lock:
+            if self._model is not None:
+                return
+            try:
+                from sentence_transformers import CrossEncoder
+            except Exception as e:
+                raise RuntimeError("sentence-transformers CrossEncoder 不可用") from e
+            device = self.device or ('cuda' if torch.cuda.is_available() else 'cpu')
+            logger.info("Loading reranker CrossEncoder {} on device {}", self.model_path, device)
+            self._model = CrossEncoder(self.model_path, device=device)
 
     def rerank(self, query: str, documents, top_k: Optional[int] = None) -> List[float]:
         self._ensure_loaded()

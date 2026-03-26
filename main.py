@@ -135,7 +135,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 				"llm_count": REGISTRY.llm_count(),
 				"embedding_count": REGISTRY.embedding_count(),
 				"reranker_count": REGISTRY.reranker_count(),
-			}
+			},
+			"deployments": REGISTRY._deployment_manager.get_all_metrics(),
 		}
 
 	# 自定义异常处理
@@ -250,6 +251,7 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 			"CONFIGURATION_ERROR": 400,
 			"UNSUPPORTED_PARAMETER": 400,
 			"RESOURCE_LIMIT_ERROR": 429,
+			"SERVICE_OVERLOADED": 503,
 			"INFERENCE_ERROR": 500,
 			"MODEL_LOAD_ERROR": 503,
 		}

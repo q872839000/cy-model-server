@@ -17,7 +17,10 @@ from typing import List, Dict, Any, Optional, Iterator, AsyncIterator
 
 from core.registry import REGISTRY
 from core.container import CONTAINER
-from core.exceptions import ModelServerException, ModelNotFoundError, InferenceError
+from core.deployment.models import ModelDeployment
+from core.exceptions import ModelServerException, ModelNotFoundError, InferenceError, ServiceOverloadedError
+from engines.cancel import CancelToken
+from strategies.base import LLMStrategy
 from strategies.protocol import StrategyInput, StrategyOutput
 from workers.async_worker import ASYNC_WORKER
 from loguru import logger
@@ -48,26 +51,52 @@ class ChatService:
     """
 
     def _get_engine_and_strategy(self, model_name: Optional[str]):
-        """
-        获取 Engine 和 Strategy
-        
+        """获取 Engine 和 Strategy（用于非执行路径：prompt 构建、tokenizer 访问等）
+
+        执行路径应使用 _get_deployment_and_strategy() 获取部署级访问。
+
         Args:
             model_name: 模型名称，None 使用默认模型
-            
+
         Returns:
             Tuple[LLMEngine, LLMStrategy]
-            
+
         Raises:
             ModelNotFoundError: 模型不存在
         """
         engine = REGISTRY.get_llm(model_name)
         if not engine:
             raise ModelNotFoundError(model_name or "default")
-        
+
         strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
         strategy = CONTAINER.get_strategy(strategy_key)
-        
+
         return engine, strategy
+
+    def _get_deployment_and_strategy(
+        self, model_name: Optional[str],
+    ) -> tuple[ModelDeployment, LLMStrategy]:
+        """获取部署和策略（用于执行路径）
+
+        通过部署获取推理槽位，实现 per-model 并发控制和多副本路由。
+
+        Args:
+            model_name: 模型名称
+
+        Returns:
+            Tuple[ModelDeployment, LLMStrategy]
+
+        Raises:
+            ModelNotFoundError: 模型不存在
+        """
+        deployment = REGISTRY.get_deployment(model_name)
+        if deployment is None:
+            raise ModelNotFoundError(model_name or "default")
+
+        strategy_key = deployment.strategy_key or "generic"
+        strategy = CONTAINER.get_strategy(strategy_key)
+
+        return deployment, strategy
 
     def build_prompt(
         self,
@@ -364,14 +393,26 @@ class ChatService:
     ) -> StrategyOutput:
         """同步执行对话生成（供 Worker 调用）
 
+        通过部署获取推理槽位，实现：
+        - per-model 排队和入场控制
+        - least-loaded 副本路由
+        - 槽位自动释放
+
         返回 StrategyOutput，包含 text、tool_calls、finish_reason 等。
         """
-        engine, strategy = self._get_engine_and_strategy(model_name)
-        input = self._build_input(model_name, messages, stream=False, **kwargs)
-        output = strategy.execute(engine, input)
-        # 确保 text 已求值（消费 stream_iterator，如有）
-        output.get_text()
-        return output
+        deployment, strategy = self._get_deployment_and_strategy(model_name)
+
+        try:
+            with deployment.slot_context() as slot:
+                si = self._build_input(model_name, messages, stream=False, **kwargs)
+                output = strategy.execute(slot.engine, si)
+                # 确保 text 已求值（消费 stream_iterator，如有）
+                output.get_text()
+                return output
+        except RuntimeError as e:
+            if "过载" in str(e):
+                raise ServiceOverloadedError(model_name or "default", str(e))
+            raise
 
     def _execute_stream_sync(
         self,
@@ -379,11 +420,21 @@ class ChatService:
         messages: List[Dict[str, Any]],
         **kwargs,
     ) -> Iterator[str]:
-        """同步执行流式对话生成（供 Worker 调用）"""
-        engine, strategy = self._get_engine_and_strategy(model_name)
-        input = self._build_input(model_name, messages, stream=True, **kwargs)
-        output = strategy.execute(engine, input)
-        yield from output.iter_chunks()
+        """同步执行流式对话生成（供 Worker 调用）
+
+        通过部署获取推理槽位，槽位在流式输出完成后自动释放。
+        """
+        deployment, strategy = self._get_deployment_and_strategy(model_name)
+
+        try:
+            with deployment.slot_context() as slot:
+                si = self._build_input(model_name, messages, stream=True, **kwargs)
+                output = strategy.execute(slot.engine, si)
+                yield from output.iter_chunks()
+        except RuntimeError as e:
+            if "过载" in str(e):
+                raise ServiceOverloadedError(model_name or "default", str(e))
+            raise
 
     async def generate(
         self,

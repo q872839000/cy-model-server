@@ -470,6 +470,8 @@ async def create_message(req: AnthropicMessagesRequest, request: Request):
         流式: StreamingResponse，包含 Anthropic SSE 事件
     """
     try:
+        raw_request = req.model_dump(mode="json", exclude_none=False)
+
         # ---- 1. 模型解析 ----
         model = _resolve_model(req.model)
 
@@ -500,6 +502,28 @@ async def create_message(req: AnthropicMessagesRequest, request: Request):
             model, input_tokens, client_max_tokens,
         )
 
+        request_payload = {
+            "protocol": "anthropic_messages",
+            "raw": raw_request,
+            "normalized": {
+                "requested_model": req.model,
+                "resolved_model": model,
+                "messages": cleaned_messages,
+                "prompt": prompt,
+                "params": {
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "top_k": top_k,
+                    "stop": stop,
+                    "enable_thinking": enable_thinking,
+                    "stream": req.stream,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                },
+            },
+        }
+
         if req.stream:
             # ====== 流式模式 ======
             return StreamingResponse(
@@ -517,6 +541,7 @@ async def create_message(req: AnthropicMessagesRequest, request: Request):
                     max_tokens=max_tokens,
                     tokenizer=tokenizer,
                     input_tokens=input_tokens,
+                    request_payload=request_payload,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -544,26 +569,6 @@ async def create_message(req: AnthropicMessagesRequest, request: Request):
         reasoning_content, content = parse_thinking_content(text)
         output_tokens = _count_tokens(tokenizer, text)
 
-        # 对话日志记录
-        await save_chat_log(
-            model=model,
-            params={
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "enable_thinking": enable_thinking,
-                "stream": False,
-                "tools": bool(tools),
-                "api": "anthropic",
-            },
-            messages=cleaned_messages,
-            assistant_content=text,
-            usage={
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            },
-        )
-
         # 确定 finish_reason
         if chat_result.has_tool_calls:
             finish_reason = "tool_calls"
@@ -576,7 +581,7 @@ async def create_message(req: AnthropicMessagesRequest, request: Request):
         content_blocks = _build_content_blocks(content, reasoning_content, tool_calls_data)
         stop_reason = _map_stop_reason(finish_reason)
 
-        return AnthropicMessagesResponse(
+        response = AnthropicMessagesResponse(
             id=f"msg_{uuid.uuid4().hex[:24]}",
             model=model,
             content=content_blocks,
@@ -586,6 +591,32 @@ async def create_message(req: AnthropicMessagesRequest, request: Request):
                 output_tokens=output_tokens,
             ),
         )
+
+        await save_chat_log(
+            model=model,
+            params={
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "stop": stop,
+                "enable_thinking": enable_thinking,
+                "stream": False,
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "api": "anthropic",
+            },
+            messages=cleaned_messages,
+            assistant_content=text,
+            usage={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json", exclude_none=False),
+        )
+
+        return response
 
     except ModelServerException:
         raise
@@ -615,6 +646,7 @@ async def _stream_anthropic_events(
     max_tokens: int,
     tokenizer: Any,
     input_tokens: int,
+    request_payload: dict[str, Any],
 ):
     """生成 Anthropic 格式的 SSE 事件流
 
@@ -643,6 +675,11 @@ async def _stream_anthropic_events(
         input_tokens: 输入 token 数量
     """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+    stream_events: list[dict[str, Any]] = []
+
+    def _sse(event_type: str, data: dict) -> str:
+        stream_events.append({"event": event_type, "data": data})
+        return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     # ---- 1. message_start ----
     yield _sse("message_start", {
@@ -670,6 +707,7 @@ async def _stream_anthropic_events(
     block_index = 0
     current_field: Optional[str] = None  # "reasoning_content" | "content"
     splitter = ThinkingStreamSplitter()
+    parsed_calls = None
 
     async for text_chunk in WORKER.generate_chat(
         model_name=model,
@@ -943,25 +981,6 @@ async def _stream_anthropic_events(
     if finish_reason == "stop":
         finish_reason = _infer_finish_reason(output_tokens, max_tokens)
 
-    await save_chat_log(
-        model=model,
-        params={
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "enable_thinking": enable_thinking,
-            "stream": True,
-            "tools": bool(tools),
-            "api": "anthropic",
-        },
-        messages=messages,
-        assistant_content=full_text,
-        usage={
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-        },
-    )
-
     # ---- message_delta（结束信息）----
     stop_reason = _map_stop_reason(finish_reason)
     yield _sse("message_delta", {
@@ -972,3 +991,39 @@ async def _stream_anthropic_events(
 
     # ---- message_stop ----
     yield _sse("message_stop", {"type": "message_stop"})
+
+    reasoning_content, content = parse_thinking_content(full_text)
+
+    await save_chat_log(
+        model=model,
+        params={
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "stop": stop,
+            "enable_thinking": enable_thinking,
+            "stream": True,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "api": "anthropic",
+        },
+        messages=messages,
+        assistant_content=full_text,
+        usage={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        },
+        request_payload=request_payload,
+        response_payload={
+            "protocol": "anthropic_messages_stream",
+            "stream": True,
+            "stop_reason": stop_reason,
+            "assistant": {
+                "content": content,
+                "reasoning_content": reasoning_content,
+                "tool_calls": parsed_calls,
+            },
+            "events": stream_events,
+        },
+    )

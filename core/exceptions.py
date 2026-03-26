@@ -70,6 +70,21 @@ class ResourceLimitError(ModelServerException):
         )
 
 
+class ServiceOverloadedError(ModelServerException):
+    """服务过载异常（对应 HTTP 503）
+
+    当模型部署的排队请求数超过 max_queue_size 或等待超时时抛出。
+    """
+
+    def __init__(self, model_name: str, reason: str = ""):
+        detail = reason or f"模型 '{model_name}' 当前过载，请稍后重试"
+        super().__init__(
+            message=detail,
+            error_code="SERVICE_OVERLOADED",
+            details={"model_name": model_name, "reason": reason},
+        )
+
+
 class UnsupportedParameterError(ModelServerException):
     """请求中包含当前不支持的参数
 

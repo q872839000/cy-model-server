@@ -388,6 +388,8 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         HTTPException 500: 推理失败
     """
     try:
+        raw_request = req.model_dump(mode="json", exclude_none=False)
+
         # ---- 参数校验：显式拒绝尚未支持的参数 ----
         _validate_unsupported_params(req)
 
@@ -420,6 +422,25 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             req.model, prompt_tokens, client_max_tokens,
         )
 
+        request_payload = {
+            "protocol": "openai_chat_completions",
+            "raw": raw_request,
+            "normalized": {
+                "messages": cleaned_messages,
+                "prompt": prompt,
+                "params": {
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "stop": stop,
+                    "enable_thinking": enable_thinking,
+                    "stream": req.stream,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                },
+            },
+        }
+
         if not req.stream:
             # 非流式：一次性返回
             chat_result = await WORKER.generate_chat(
@@ -445,26 +466,6 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
-            )
-
-            # 对话日志记录（调试/监控用）
-            await save_chat_log(
-                model=req.model,
-                params={
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "enable_thinking": enable_thinking,
-                    "stream": req.stream,
-                    "tools": bool(tools),
-                },
-                messages=cleaned_messages,
-                assistant_content=text,
-                usage={
-                    "prompt_tokens": usage.prompt_tokens,
-                    "completion_tokens": usage.completion_tokens,
-                    "total_tokens": usage.total_tokens,
-                },
             )
 
             # 构建 assistant 消息
@@ -493,7 +494,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             else:
                 finish_reason = _infer_finish_reason(completion_tokens, max_tokens)
 
-            return ChatCompletionResponse(
+            response = ChatCompletionResponse(
                 id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
                 created=int(time.time()),
                 model=req.model,
@@ -506,6 +507,32 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 ],
                 usage=usage,
             )
+
+            await save_chat_log(
+                model=req.model,
+                params={
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "stop": stop,
+                    "enable_thinking": enable_thinking,
+                    "stream": req.stream,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                    "api": "openai",
+                },
+                messages=cleaned_messages,
+                assistant_content=text,
+                usage={
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
+                },
+                request_payload=request_payload,
+                response_payload=response.model_dump(mode="json", exclude_none=False),
+            )
+
+            return response
 
         # ====== 流式模式：SSE (Server-Sent Events) 格式输出 ======
         import orjson as _oj
@@ -520,12 +547,15 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
             created = int(time.time())
             include_usage = bool(req.stream_options and req.stream_options.include_usage)
+            stream_events: list[dict[str, Any]] = []
 
             # ---- SSE 格式化辅助函数 ----
 
             def _sse(chunk: ChatCompletionChunkResponse) -> str:
                 """将 chunk 对象序列化为 SSE data 行"""
-                return "data: " + _oj.dumps(chunk.model_dump(exclude_none=True)).decode() + "\n\n"
+                payload = chunk.model_dump(exclude_none=True)
+                stream_events.append(payload)
+                return "data: " + _oj.dumps(payload).decode() + "\n\n"
 
             def _delta_sse(
                 delta: ChatCompletionDelta,
@@ -557,6 +587,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             full_text = ""
             finish_reason = "stop"
             splitter = ThinkingStreamSplitter()
+            parsed_calls = None
 
             async for text_chunk in WORKER.generate_chat(
                 model_name=req.model,
@@ -630,24 +661,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             if finish_reason == "stop":
                 finish_reason = _infer_finish_reason(completion_tokens, max_tokens)
 
-            await save_chat_log(
-                model=req.model,
-                params={
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "enable_thinking": enable_thinking,
-                    "stream": req.stream,
-                    "tools": bool(tools),
-                },
-                messages=cleaned_messages,
-                assistant_content=full_text,
-                usage={
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens,
-                },
-            )
+            reasoning_content, content = parse_thinking_content(full_text)
 
             # ---- 结束 chunk（含 finish_reason）----
             yield _delta_sse(ChatCompletionDelta(), finish_reason=finish_reason)
@@ -668,7 +682,42 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 ))
 
             # OpenAI 规范：流式结束时发送 [DONE] 标记
+            stream_events.append({"data": "[DONE]"})
             yield "data: [DONE]\n\n"
+
+            await save_chat_log(
+                model=req.model,
+                params={
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "stop": stop,
+                    "enable_thinking": enable_thinking,
+                    "stream": req.stream,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                    "api": "openai",
+                },
+                messages=cleaned_messages,
+                assistant_content=full_text,
+                usage={
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
+                request_payload=request_payload,
+                response_payload={
+                    "protocol": "openai_chat_completions_stream",
+                    "stream": True,
+                    "finish_reason": finish_reason,
+                    "assistant": {
+                        "content": content,
+                        "reasoning_content": reasoning_content,
+                        "tool_calls": parsed_calls,
+                    },
+                    "events": stream_events,
+                },
+            )
 
         return StreamingResponse(
             event_generator(),

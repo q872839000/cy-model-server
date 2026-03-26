@@ -49,7 +49,7 @@ class ServiceContainer:
 
     def get_llm_and_strategy(self, model_name: str | None):
         """
-        获取 LLM 引擎和对应的策略。
+        获取 LLM 引擎和对应的策略（向后兼容）。
         
         Args:
             model_name: 模型名称，为 None 时使用默认模型
@@ -61,6 +61,22 @@ class ServiceContainer:
         strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
         strategy = StrategyFactory.get(strategy_key)
         return engine, strategy
+
+    def get_deployment_and_strategy(self, model_name: str | None):
+        """获取 LLM 部署和对应的策略。
+
+        新代码应优先使用此方法获取部署级访问（多副本、调度）。
+
+        Args:
+            model_name: 模型名称，为 None 时使用默认模型
+
+        Returns:
+            Tuple[ModelDeployment, LLMStrategy]: 部署和策略
+        """
+        deployment = REGISTRY.get_deployment(model_name)
+        strategy_key = REGISTRY.get_llm_strategy_key(model_name) or "generic"
+        strategy = StrategyFactory.get(strategy_key)
+        return deployment, strategy
 
     def get_embedding(self, model_name: str | None):
         """

@@ -223,8 +223,9 @@ class EngineDefaults(BaseModel):
 class LLMModelConfig(BaseModel):
     """
     LLM模型配置
-    
-    定义单个LLM模型的所有配置参数，配置结构明确直观。
+
+    定义单个LLM模型的所有配置参数，包括部署拓扑和并发控制。
+    所有部署相关字段均有合理默认值，保持向后兼容。
     """
     name: str = Field(description="模型名称")
     engine: Optional[str] = Field(default=None, description="引擎类型")
@@ -237,6 +238,40 @@ class LLMModelConfig(BaseModel):
     context_window: Optional[int] = Field(
         default=None,
         description="模型上下文窗口大小（token 数）。未配置时自动从模型 config 探测",
+    )
+
+    # ---- 部署拓扑 ----
+    replicas: int = Field(
+        default=1,
+        description="副本数量。每个副本持有独立的引擎实例，可绑定到不同 GPU",
+    )
+    devices: Optional[List[str]] = Field(
+        default=None,
+        description="各副本绑定的设备列表，如 ['cuda:0', 'cuda:1']。"
+                    "长度应等于 replicas；未配置时所有副本使用 device 字段",
+    )
+    tensor_parallel_size: int = Field(
+        default=1,
+        description="张量并行度（仅 vLLM 生效）。大于 1 时模型切分到多张 GPU",
+    )
+
+    # ---- 并发与调度 ----
+    max_concurrent: int = Field(
+        default=1,
+        description="每个副本允许的最大并发推理数。"
+                    "transformers 建议 1（GPU 互斥）；vLLM 可设为更大值以启用连续批处理",
+    )
+    max_queue_size: int = Field(
+        default=64,
+        description="每个部署的最大排队请求数，超出时返回 503",
+    )
+    request_timeout: float = Field(
+        default=300.0,
+        description="单次推理请求的最大等待时间（秒），含排队 + 推理",
+    )
+    cancel_grace_period: float = Field(
+        default=5.0,
+        description="取消后等待底层推理停止的宽限时间（秒）",
     )
 
 

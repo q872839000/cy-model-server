@@ -9,7 +9,7 @@
 
 import time
 import uuid
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -30,6 +30,7 @@ from core.exceptions import ModelServerException
 from rag.kb_chat import KBChatService
 from utils.message_filter import clean_messages_for_history
 from utils.thinking_parser import parse_thinking_content, ThinkingStreamSplitter
+from utils.chat_logger import save_chat_log
 from core.container import CONTAINER
 
 
@@ -95,9 +96,34 @@ async def kb_chat_completions(request: KBChatRequest) -> KBChatResponse | Stream
     try:
         # 获取知识库对话服务实例
         service = _get_kb_chat_service()
+        raw_request = request.model_dump(mode="json", exclude_none=False)
         
         # 转换消息格式为Python字典，并过滤历史消息中的思考内容
         messages = clean_messages_for_history([msg.model_dump() for msg in request.messages])
+
+        request_payload = {
+            "protocol": "kb_chat_completions",
+            "raw": raw_request,
+            "normalized": {
+                "messages": messages,
+                "params": {
+                    "collection_name": request.collection_name,
+                    "search_enabled": request.search_enabled,
+                    "search_mode": request.search_mode,
+                    "search_top_k": request.search_top_k,
+                    "rerank": request.rerank,
+                    "score_threshold": request.score_threshold,
+                    "query_rewrite": request.query_rewrite,
+                    "max_tokens": request.max_tokens,
+                    "temperature": request.temperature,
+                    "top_p": request.top_p,
+                    "session_id": request.session_id,
+                    "return_sources": request.return_sources,
+                    "enable_thinking": request.enable_thinking,
+                    "stream": request.stream,
+                },
+            },
+        }
         
         if not request.stream:
             # 非流式
@@ -123,7 +149,7 @@ async def kb_chat_completions(request: KBChatRequest) -> KBChatResponse | Stream
             reasoning_content, content = parse_thinking_content(result.content)
 
             # 构建响应
-            return KBChatResponse(
+            response = KBChatResponse(
                 id=f"kbchat-{uuid.uuid4().hex[:8]}",
                 created=int(time.time()),
                 model=request.model,
@@ -154,10 +180,37 @@ async def kb_chat_completions(request: KBChatRequest) -> KBChatResponse | Stream
                     search_took_ms=result.kb_info.search_took_ms,
                 ),
             )
+
+            await save_chat_log(
+                model=request.model,
+                params={
+                    "collection_name": request.collection_name,
+                    "search_enabled": request.search_enabled,
+                    "search_mode": request.search_mode,
+                    "search_top_k": request.search_top_k,
+                    "rerank": request.rerank,
+                    "score_threshold": request.score_threshold,
+                    "query_rewrite": request.query_rewrite,
+                    "max_tokens": request.max_tokens,
+                    "temperature": request.temperature,
+                    "top_p": request.top_p,
+                    "session_id": request.session_id,
+                    "return_sources": request.return_sources,
+                    "enable_thinking": request.enable_thinking,
+                    "stream": False,
+                    "api": "kb_chat",
+                },
+                messages=messages,
+                assistant_content=result.content,
+                request_payload=request_payload,
+                response_payload=response.model_dump(mode="json", exclude_none=False),
+            )
+
+            return response
         
         # 流式：返回SSE流式响应
         return StreamingResponse(
-            _generate_stream(service, request, messages),
+            _generate_stream(service, request, messages, request_payload),
             media_type="text/event-stream",
         )
         
@@ -173,6 +226,7 @@ async def _generate_stream(
     service: KBChatService,
     request: KBChatRequest,
     messages: List[dict],
+    request_payload: dict[str, Any],
 ):
     """
     生成知识库对话的流式响应
@@ -192,6 +246,9 @@ async def _generate_stream(
     
     chat_id = f"kbchat-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
+    stream_events: list[dict[str, Any]] = []
+    full_text = ""
+    kb_info_payload: dict[str, Any] | None = None
     
     def make_chunk(delta: KBChatDelta, finish_reason: Optional[str] = None, kb_info: Optional[KBChatInfo] = None) -> str:
         """
@@ -217,7 +274,9 @@ async def _generate_stream(
             )],
             kb_info=kb_info,
         )
-        return orjson.dumps(chunk.model_dump(exclude_none=True)).decode()
+        payload = chunk.model_dump(exclude_none=True)
+        stream_events.append(payload)
+        return orjson.dumps(payload).decode()
     
     # 流式 <think> 标签拆分器
     splitter = ThinkingStreamSplitter()
@@ -263,12 +322,15 @@ async def _generate_stream(
                         logger.warning("KBChatInfo构造失败: {}, event_data: {}", str(e), event_data)
                         # 构造失败时不传递kb_info
                         kb_info_obj = None
+                if kb_info_obj is not None:
+                    kb_info_payload = kb_info_obj.model_dump(exclude_none=True)
                 yield f"data: {make_chunk(KBChatDelta(role='assistant'), kb_info=kb_info_obj)}\n\n"
             
             elif event_type == "content":
                 # 通过状态机拆分：thinking 阶段→reasoning_content，正文阶段→content
                 text = event_data.get("text", "")
                 if text:
+                    full_text += text
                     for field, split_text in splitter.feed(text):
                         delta = KBChatDelta(
                             reasoning_content=split_text if field == "reasoning_content" else None,
@@ -286,13 +348,92 @@ async def _generate_stream(
                     yield f"data: {make_chunk(delta)}\n\n"
                 # 发送结束标记
                 yield f"data: {make_chunk(KBChatDelta(), 'stop')}\n\n"
+                stream_events.append({"data": "[DONE]"})
                 yield "data: [DONE]\n\n"
+
+                reasoning_content, content = parse_thinking_content(full_text)
+
+                await save_chat_log(
+                    model=request.model,
+                    params={
+                        "collection_name": request.collection_name,
+                        "search_enabled": request.search_enabled,
+                        "search_mode": request.search_mode,
+                        "search_top_k": request.search_top_k,
+                        "rerank": request.rerank,
+                        "score_threshold": request.score_threshold,
+                        "query_rewrite": request.query_rewrite,
+                        "max_tokens": request.max_tokens,
+                        "temperature": request.temperature,
+                        "top_p": request.top_p,
+                        "session_id": request.session_id,
+                        "return_sources": request.return_sources,
+                        "enable_thinking": request.enable_thinking,
+                        "stream": True,
+                        "api": "kb_chat",
+                    },
+                    messages=messages,
+                    assistant_content=full_text,
+                    request_payload=request_payload,
+                    response_payload={
+                        "protocol": "kb_chat_completions_stream",
+                        "stream": True,
+                        "finish_reason": "stop",
+                        "assistant": {
+                            "content": content,
+                            "reasoning_content": reasoning_content,
+                        },
+                        "kb_info": kb_info_payload,
+                        "events": stream_events,
+                    },
+                )
+                break
             
             elif event_type == "error":
                 # 发送错误信息
                 error_msg = event_data.get("message", "Unknown error")
                 yield f"data: {make_chunk(KBChatDelta(content=f'[错误: {error_msg}]'), 'error')}\n\n"
+                stream_events.append({"data": "[DONE]"})
                 yield "data: [DONE]\n\n"
+
+                reasoning_content, content = parse_thinking_content(full_text)
+
+                await save_chat_log(
+                    model=request.model,
+                    params={
+                        "collection_name": request.collection_name,
+                        "search_enabled": request.search_enabled,
+                        "search_mode": request.search_mode,
+                        "search_top_k": request.search_top_k,
+                        "rerank": request.rerank,
+                        "score_threshold": request.score_threshold,
+                        "query_rewrite": request.query_rewrite,
+                        "max_tokens": request.max_tokens,
+                        "temperature": request.temperature,
+                        "top_p": request.top_p,
+                        "session_id": request.session_id,
+                        "return_sources": request.return_sources,
+                        "enable_thinking": request.enable_thinking,
+                        "stream": True,
+                        "api": "kb_chat",
+                    },
+                    messages=messages,
+                    assistant_content=full_text,
+                    request_payload=request_payload,
+                    response_payload={
+                        "protocol": "kb_chat_completions_stream",
+                        "stream": True,
+                        "finish_reason": "error",
+                        "assistant": {
+                            "content": content,
+                            "reasoning_content": reasoning_content,
+                        },
+                        "kb_info": kb_info_payload,
+                        "events": stream_events,
+                    },
+                    error={"message": error_msg},
+                )
+                break
                 
     except Exception as e:
         logger.error("流式对话失败: {}", str(e))
@@ -302,4 +443,43 @@ async def _generate_stream(
         else:
             error_msg = str(e)
         yield f"data: {make_chunk(KBChatDelta(content=f'[错误: {error_msg}]'), 'error')}\n\n"
+        stream_events.append({"data": "[DONE]"})
         yield "data: [DONE]\n\n"
+
+        reasoning_content, content = parse_thinking_content(full_text)
+
+        await save_chat_log(
+            model=request.model,
+            params={
+                "collection_name": request.collection_name,
+                "search_enabled": request.search_enabled,
+                "search_mode": request.search_mode,
+                "search_top_k": request.search_top_k,
+                "rerank": request.rerank,
+                "score_threshold": request.score_threshold,
+                "query_rewrite": request.query_rewrite,
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "session_id": request.session_id,
+                "return_sources": request.return_sources,
+                "enable_thinking": request.enable_thinking,
+                "stream": True,
+                "api": "kb_chat",
+            },
+            messages=messages,
+            assistant_content=full_text,
+            request_payload=request_payload,
+            response_payload={
+                "protocol": "kb_chat_completions_stream",
+                "stream": True,
+                "finish_reason": "error",
+                "assistant": {
+                    "content": content,
+                    "reasoning_content": reasoning_content,
+                },
+                "kb_info": kb_info_payload,
+                "events": stream_events,
+            },
+            error={"message": error_msg},
+        )

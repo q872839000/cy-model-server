@@ -127,7 +127,11 @@ class DeploymentManager:
                     engine._ensure_loaded()
 
                 # 根据引擎能力调整并发数
-                caps = engine.capabilities()
+                # 优先使用实例级能力（能反映 vLLM fallback 等运行时状态）
+                if hasattr(engine, "instance_capabilities"):
+                    caps = engine.instance_capabilities()
+                else:
+                    caps = engine.capabilities()
                 effective_concurrent = max_concurrent
                 if caps.supports_concurrent_requests and caps.preferred_max_concurrency > 0:
                     effective_concurrent = max(
@@ -136,6 +140,17 @@ class DeploymentManager:
                 elif not caps.supports_concurrent_requests:
                     # 不支持并发的引擎（如 transformers），强制单并发
                     effective_concurrent = 1
+
+                # 检测 vLLM fallback 场景并输出显眼警告
+                actual_engine_type = engine_type
+                if engine_type == "vllm" and not caps.supports_concurrent_requests:
+                    actual_engine_type = "transformers(fallback)"
+                    logger.warning(
+                        "⚠ 副本 {} 配置为 vLLM 但实际回退到 transformers 引擎"
+                        "（单并发串行推理），并发请求将排队执行！"
+                        "请检查 vLLM 启动日志排查失败原因。",
+                        replica_id,
+                    )
 
                 replica = ModelReplica(
                     engine=engine,
@@ -146,7 +161,7 @@ class DeploymentManager:
                 replicas.append(replica)
                 logger.info(
                     "副本构建成功: {} via {} (device={}, concurrent={})",
-                    replica_id, engine_type, device, effective_concurrent,
+                    replica_id, actual_engine_type, device, effective_concurrent,
                 )
 
             except Exception as e:

@@ -4,10 +4,10 @@ app:
   port: 8000
   log_level: DEBUG
   log_format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
-  # 生产环境配置
-  workers: 1  # 模型服务建议单worker，避免内存重复加载
-  max_request_size: 10485760  # 10MB
-  request_timeout: 300  # 5分钟
+  # AsyncWorker 线程池大小：控制同时执行的推理任务数
+  # 不配置（注释掉）时自动计算：sum(max_concurrent × replicas) + embedding/reranker 数量
+  # 手动配置时直接使用指定值，建议 >= 所有模型 max_concurrent 之和
+  # workers: 32
 
 # 全局推理引擎默认设置（模型未指定时使用）
 engine_defaults:
@@ -25,6 +25,7 @@ engine_defaults:
 #     Qwen系列: qwen (基础) | qwen2 | qwen3 (支持深度思考)
 #     GLM系列: glm (基础) | glm4 (GLM-4系列, 可选思考) | glm4-z1 (GLM-Z1系列, 强制思考)
 #     Deepseek系列: deepseek (基础) | deepseek-r1 (支持深度思考)
+#     Phi-4系列: phi4 (14B基础) | phi4-mini (3.8B) | phi4-reasoning (14B推理) | phi4-mini-reasoning (3.8B推理)
 # - engine/device/dtype: 可选，未指定时使用 engine_defaults
 # - context_window: 模型上下文窗口大小（token 数）。未配置时自动从模型 config 探测。
 #     服务会根据 context_window 和每次请求的 prompt_tokens 动态计算 max_tokens，
@@ -47,6 +48,8 @@ llms:
     chat_strategy: qwen3           # 使用 Qwen3 策略，支持 enable_thinking 参数
     enable_thinking: false
     # context_window: 40960      # 可选：手动指定上下文窗口（未配置时自动探测）
+    max_concurrent: 32
+    engine: vllm
     gen_params:
       max_tokens: 2048            # 硬件级上限：8GB 显存的安全输出长度，防止 OOM
 #      temperature: 0.7

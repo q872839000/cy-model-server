@@ -90,6 +90,54 @@ class LLMEngine(_LoadLockMixin, ABC):
 				return val
 		return None
 
+	def supports_native_tools_template(self) -> bool:
+		return False
+
+	@staticmethod
+	def _probe_native_tools_template_support(tokenizer) -> bool:
+		probe_name = "__tool_probe_support__"
+		probe_desc = "__tool_probe_description__"
+		probe_param = "__tool_probe_arg__"
+		probe_value = "__tool_probe_value__"
+		probe_messages = [{"role": "user", "content": "tool support probe"}]
+		probe_tools = [{
+			"type": "function",
+			"function": {
+				"name": probe_name,
+				"description": probe_desc,
+				"parameters": {
+					"type": "object",
+					"properties": {
+						probe_param: {
+							"type": "string",
+							"description": probe_value,
+						},
+					},
+				},
+			},
+		}]
+		try:
+			without_tools = tokenizer.apply_chat_template(
+				probe_messages,
+				tokenize=False,
+				add_generation_prompt=True,
+			)
+			with_tools = tokenizer.apply_chat_template(
+				probe_messages,
+				tools=probe_tools,
+				tokenize=False,
+				add_generation_prompt=True,
+			)
+		except Exception:
+			return False
+		without_text = "" if without_tools is None else str(without_tools)
+		with_text = "" if with_tools is None else str(with_tools)
+		if not with_text or with_text == without_text:
+			return False
+		return any(marker in with_text for marker in (
+			probe_name, probe_desc, probe_param, probe_value,
+		))
+
 	def apply_chat_template(
 		self,
 		messages: List[Dict[str, Any]],

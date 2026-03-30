@@ -1,7 +1,7 @@
 """Deepseek 系列模型基础策略"""
 
 from typing import List, Dict
-from strategies.base import LLMStrategy
+from strategies.base import LLMStrategy, ToolPromptMode
 
 
 class DeepseekBaseStrategy(LLMStrategy):
@@ -23,3 +23,9 @@ class DeepseekBaseStrategy(LLMStrategy):
 
     def get_default_stop_words(self) -> List[str]:
         return ["</assistant>", "<user>", "</user>"]
+
+    def supports_native_tools(self) -> bool:
+        return False
+
+    def tool_prompt_mode(self) -> ToolPromptMode:
+        return ToolPromptMode.INJECTED

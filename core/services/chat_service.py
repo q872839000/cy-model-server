@@ -17,6 +17,12 @@ from typing import List, Dict, Any, Optional, Iterator, AsyncIterator
 
 from core.registry import REGISTRY
 from core.container import CONTAINER
+from core.context.trimmer import (
+    trim_messages as _trim_messages,
+    TokenizerCounter,
+    EstimateCounter,
+    _build_tool_groups,
+)
 from core.deployment.models import ModelDeployment
 from core.exceptions import ModelServerException, ModelNotFoundError, InferenceError, ServiceOverloadedError
 from engines.cancel import CancelToken
@@ -125,34 +131,16 @@ class ChatService:
             engine, strategy = self._get_engine_and_strategy(model_name)
         except ModelNotFoundError:
             return ""
-        
-        # 从模型配置获取 enable_thinking 默认值
-        if enable_thinking is None:
-            llm_config = REGISTRY.get_llm_config(model_name)
-            if llm_config and llm_config.enable_thinking:
-                enable_thinking = llm_config.enable_thinking
-            else:
-                enable_thinking = False
 
-        # 当 tools 存在时，镜像 Strategy.execute() 的路径选择逻辑：
-        # - tool_choice 为默认值(None/"auto")时，尝试引擎原生模板
-        # - tool_choice 为非默认值时，强制走 fallback（注入行为指令）
-        if tools:
-            _tc = tool_choice
-            tool_choice_is_default = (_tc is None or _tc == "auto")
-            if tool_choice_is_default:
-                prompt = engine.apply_chat_template(
-                    messages, tools=tools, enable_thinking=enable_thinking,
-                )
-                if prompt is not None:
-                    return prompt
-            # 原生模板不支持或 tool_choice 非默认，回退：注入 tools + tool_choice 指令
-            injected = strategy.inject_tools_into_messages(messages, tools, tool_choice)
-            return strategy.apply_chat_template(
-                injected, enable_thinking=enable_thinking,
-            )
-
-        return strategy.apply_chat_template(messages, enable_thinking=enable_thinking)
+        return self._resolve_prompt_output(
+            model_name,
+            engine,
+            strategy,
+            messages,
+            enable_thinking=enable_thinking,
+            tools=tools,
+            tool_choice=tool_choice,
+        ).prompt
 
     def get_tokenizer(self, model_name: Optional[str]):
         """
@@ -196,6 +184,7 @@ class ChatService:
         self,
         model_name: Optional[str],
         text: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> list[dict]:
         """从模型输出文本中解析工具调用（委托给对应 Strategy）
 
@@ -213,12 +202,96 @@ class ChatService:
             _, strategy = self._get_engine_and_strategy(model_name)
         except ModelNotFoundError:
             return []
-        return strategy.parse_tool_calls(text)
+        result = strategy.parse_tool_calls(text, tools)
+        logger.debug(
+            "parse_tool_calls: model={} text_len={} strategy={} result_count={}",
+            model_name, len(text), type(strategy).__name__, len(result),
+        )
+        return result
 
     # 动态预算安全余量（预留给模板标记、特殊 token 等）
     _SAFETY_MARGIN_TOKENS = 256
     # 当所有探测方式都失败时的全局兜底值
     _FALLBACK_MAX_TOKENS = 4096
+
+    def trim_messages(
+        self,
+        model_name: Optional[str],
+        messages: List[Dict[str, Any]],
+        max_output_tokens: Optional[int] = None,
+        enable_thinking: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+    ) -> List[Dict[str, Any]]:
+        """将消息列表裁剪到模型上下文窗口内
+
+        作为服务端的安全网，确保发送给引擎的 messages 不会超出上下文限制。
+        截断策略：保留 system 消息和最近的对话轮次，丢弃最早的历史消息。
+
+        调用方（Router）应在 build_prompt / resolve_max_tokens 之前调用此方法。
+
+        Args:
+            model_name: 模型名称
+            messages: OpenAI 格式的消息列表
+            max_output_tokens: 为输出预留的 token 数；None 时使用硬件上限或默认值
+
+        Returns:
+            裁剪后的消息列表（未超长时原样返回）
+        """
+        context_window = self.get_context_window(model_name)
+        if context_window is None:
+            return messages
+
+        # 确定输出预留量
+        if max_output_tokens is None:
+            hw_limit = self._get_hardware_max_tokens(model_name)
+            max_output_tokens = hw_limit or self._FALLBACK_MAX_TOKENS
+
+        # 输出预留量不能超过 context_window 的一半，否则留给输入的空间太小
+        # （客户端可能传 max_tokens=64000，但模型窗口只有 40960）
+        max_reserve = context_window // 2
+        effective_reserve = min(max_output_tokens, max_reserve) + self._SAFETY_MARGIN_TOKENS
+
+        # 构建 token 计数器
+        tokenizer = self.get_tokenizer(model_name)
+        counter = TokenizerCounter(tokenizer) if tokenizer else EstimateCounter()
+
+        trimmed = _trim_messages(
+            messages,
+            max_tokens=context_window,
+            counter=counter,
+            reserve_output_tokens=effective_reserve,
+        )
+
+        prompt_budget = max(context_window - effective_reserve, 1)
+        if trimmed:
+            try:
+                engine, strategy = self._get_engine_and_strategy(model_name)
+                refined = self._trim_rendered_prompt_messages(
+                    model_name,
+                    engine,
+                    strategy,
+                    trimmed,
+                    prompt_budget=prompt_budget,
+                    counter=counter,
+                    enable_thinking=enable_thinking,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                )
+                trimmed = refined
+            except ModelNotFoundError:
+                pass
+
+        if len(trimmed) < len(messages):
+            dropped = len(messages) - len(trimmed)
+            logger.info(
+                "上下文截断: model={} 原始消息={} 保留={} 丢弃={} "
+                "context_window={} reserve_output={}",
+                model_name, len(messages), len(trimmed), dropped,
+                context_window, max_output_tokens,
+            )
+
+        return trimmed
 
     def get_context_window(self, model_name: Optional[str]) -> Optional[int]:
         """获取指定模型的上下文窗口大小
@@ -300,6 +373,13 @@ class ChatService:
         # 1. 动态预算：context_window - prompt_tokens - safety_margin
         context_window = self.get_context_window(model_name)
         if context_window is not None and prompt_tokens > 0:
+            if prompt_tokens >= context_window:
+                from core.exceptions import ContextLengthExceededError
+                raise ContextLengthExceededError(
+                    model_name or "default",
+                    prompt_tokens=prompt_tokens,
+                    context_window=context_window,
+                )
             available = context_window - prompt_tokens - self._SAFETY_MARGIN_TOKENS
             if available > 0:
                 candidates.append(available)
@@ -343,6 +423,118 @@ class ChatService:
         from strategies.base import _strip_tool_call_text
         return _strip_tool_call_text(text, tool_calls)
 
+    def _resolve_enable_thinking(
+        self,
+        model_name: Optional[str],
+        enable_thinking: Optional[bool],
+    ) -> bool:
+        if enable_thinking is not None:
+            return enable_thinking
+        llm_config = REGISTRY.get_llm_config(model_name)
+        if llm_config and llm_config.enable_thinking:
+            return llm_config.enable_thinking
+        return False
+
+    def _resolve_prompt_output(
+        self,
+        model_name: Optional[str],
+        engine,
+        strategy: LLMStrategy,
+        messages: List[Dict[str, Any]],
+        *,
+        enable_thinking: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+    ):
+        resolved_enable_thinking = self._resolve_enable_thinking(
+            model_name,
+            enable_thinking,
+        )
+        strategy_input = StrategyInput(
+            messages=messages,
+            stream=False,
+            max_tokens=1,
+            temperature=0.0,
+            top_p=1.0,
+            top_k=None,
+            stop=None,
+            enable_thinking=resolved_enable_thinking,
+            tools=tools,
+            tool_choice=tool_choice,
+            extra={},
+        )
+        return strategy.resolve_prompt(engine, strategy_input)
+
+    def _build_prunable_units(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[List[int]]:
+        if not messages:
+            return []
+        last_user_idx: Optional[int] = None
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == "user":
+                last_user_idx = idx
+                break
+
+        tool_groups = _build_tool_groups(messages)
+        idx_to_group: Dict[int, List[int]] = {}
+        for group in tool_groups:
+            for idx in group:
+                idx_to_group[idx] = group
+
+        units: List[List[int]] = []
+        idx = 0
+        while idx < len(messages):
+            if messages[idx].get("role") == "system" or idx == last_user_idx:
+                idx += 1
+                continue
+            group = idx_to_group.get(idx)
+            if group is not None:
+                if last_user_idx is not None and last_user_idx in group:
+                    idx = group[-1] + 1
+                    continue
+                units.append(group)
+                idx = group[-1] + 1
+                continue
+            units.append([idx])
+            idx += 1
+        return units
+
+    def _trim_rendered_prompt_messages(
+        self,
+        model_name: Optional[str],
+        engine,
+        strategy: LLMStrategy,
+        messages: List[Dict[str, Any]],
+        *,
+        prompt_budget: int,
+        counter,
+        enable_thinking: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+    ) -> List[Dict[str, Any]]:
+        current = list(messages)
+        while current:
+            prompt_output = self._resolve_prompt_output(
+                model_name,
+                engine,
+                strategy,
+                current,
+                enable_thinking=enable_thinking,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+            prompt_tokens = counter.count(prompt_output.prompt)
+            if prompt_tokens <= prompt_budget:
+                return current
+            units = self._build_prunable_units(current)
+            if not units:
+                return current
+            drop_indices = set(units[0])
+            current = [m for idx, m in enumerate(current) if idx not in drop_indices]
+        return current
+
     def _build_input(
         self,
         model_name: Optional[str],
@@ -363,13 +555,7 @@ class ChatService:
         
         会自动从模型配置中读取 enable_thinking 默认值。
         """
-        # 从模型配置获取 enable_thinking 默认值
-        if enable_thinking is None:
-            llm_config = REGISTRY.get_llm_config(model_name)
-            if llm_config and llm_config.enable_thinking:
-                enable_thinking = llm_config.enable_thinking
-            else:
-                enable_thinking = False
+        enable_thinking = self._resolve_enable_thinking(model_name, enable_thinking)
         
         return StrategyInput(
             messages=messages,

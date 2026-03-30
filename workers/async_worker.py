@@ -247,6 +247,31 @@ class AsyncWorker:
             # 消费端退出时（正常结束、异常、客户端断开），通知生产线程停止
             handle.cancel()
 
+    def reconfigure(self, max_workers: int) -> None:
+        """重新配置线程池大小（仅限启动阶段调用）
+
+        用于解决模块导入时无法读取配置的问题：
+        ASYNC_WORKER 在模块导入时以默认值创建，lifespan 初始化后
+        根据实际模型配置重新调整线程池大小。
+
+        IMPORTANT: 必须在服务接受请求之前调用（lifespan yield 之前）。
+        不支持在请求处理期间并发调用。
+
+        Args:
+            max_workers: 新的线程池大小
+        """
+        if max_workers == self.max_workers:
+            logger.debug("AsyncWorker 线程池大小未变化: {} workers", max_workers)
+            return
+        old_executor = self.executor
+        old_size = self.max_workers
+        self.max_workers = max_workers
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        old_executor.shutdown(wait=False)
+        logger.info(
+            "AsyncWorker 线程池已调整: {} → {} workers", old_size, max_workers
+        )
+
     def shutdown(self, wait: bool = True):
         """关闭工作器"""
         self.executor.shutdown(wait=wait)

@@ -186,8 +186,14 @@ def _convert_user_message(msg: AnthropicMessage) -> list[dict]:
                 "content": tool_content,
             })
         elif block.type == "image":
-            # 图片占位符（依赖底层模型多模态能力）
-            text_parts.append("[image]")
+            # TODO: 多模态支持 — 需要保留 block.source 中的 base64/URL 图片数据，
+            #   在 Engine 层用 AutoProcessor 预处理为 pixel_values 张量。
+            #   当前明确拒绝，避免模型基于 "[image]" 文本产生幻觉回复。
+            from core.exceptions import UnsupportedParameterError
+            raise UnsupportedParameterError(
+                "image",
+                "当前不支持图片/多模态内容。请使用纯文本消息。"
+            )
 
     if text_parts:
         results.append({"role": "user", "content": "\n".join(text_parts)})
@@ -432,24 +438,6 @@ def _anthropic_error_response(status_code: int, error_type: str, message: str):
     )
 
 
-# ==================== SSE 事件格式化 ====================
-
-
-def _sse(event_type: str, data: dict) -> str:
-    """格式化 Anthropic SSE 事件
-
-    Anthropic SSE 格式与 OpenAI 不同：每个事件有 event: 行和 data: 行
-
-    参数:
-        event_type: SSE 事件类型名称
-        data: 事件数据字典
-
-    返回:
-        格式化后的 SSE 字符串
-    """
-    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
 # ==================== API 端点 ====================
 
 
@@ -488,6 +476,16 @@ async def create_message(req: AnthropicMessagesRequest, request: Request):
 
         # 过滤历史消息中的思考内容
         cleaned_messages = clean_messages_for_history(messages)
+
+        # 上下文截断：超长消息在构建 prompt 前裁剪到模型窗口内
+        cleaned_messages = CHAT_SERVICE.trim_messages(
+            model,
+            cleaned_messages,
+            max_output_tokens=client_max_tokens,
+            enable_thinking=enable_thinking,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
 
         # ---- 3. Token 统计准备 ----
         tokenizer = _get_tokenizer_for_model(model)
@@ -771,7 +769,11 @@ async def _stream_anthropic_events(
 
     if should_buffer_for_tools:
         # 工具缓冲模式：解析工具调用
-        parsed_calls = CHAT_SERVICE.parse_tool_calls(model, full_text)
+        parsed_calls = CHAT_SERVICE.parse_tool_calls(
+            model,
+            full_text,
+            tools=tools,
+        )
 
         if parsed_calls:
             # 解析 thinking + content
@@ -993,6 +995,8 @@ async def _stream_anthropic_events(
     yield _sse("message_stop", {"type": "message_stop"})
 
     reasoning_content, content = parse_thinking_content(full_text)
+    if parsed_calls and content:
+        content = CHAT_SERVICE.strip_tool_call_text(content, parsed_calls)
 
     await save_chat_log(
         model=model,

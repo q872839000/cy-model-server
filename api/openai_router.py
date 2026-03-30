@@ -110,10 +110,17 @@ def _extract_text_from_content(content) -> str:
                 if isinstance(text_val, str) and text_val:
                     parts.append(text_val)
                 continue
-            # 图片类内容块用占位符替代
+            # 图片类内容块：当前不支持多模态，明确拒绝而非静默丢弃
+            # TODO: 多模态支持 — 需要在 Engine 层引入 AutoProcessor，
+            #   Strategy 层支持 VL 模型模板，StrategyInput 增加 images 字段，
+            #   _build_inputs() 产出 pixel_values + image_grid_thw 等张量。
+            #   参见架构分析：API层保留完整 content blocks → Engine层用 AutoProcessor 预处理
             if t == "image_url":
-                parts.append("[image]")
-                continue
+                from core.exceptions import UnsupportedParameterError
+                raise UnsupportedParameterError(
+                    "image_url",
+                    "当前不支持图片/多模态内容。请使用纯文本消息。"
+                )
             # 其他未知类型兜底
             parts.append(str(block))
         return "\n".join([p for p in parts if p])
@@ -408,6 +415,16 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         # 统一 tools/tool_choice（兼容旧版 functions/function_call）
         tools, tool_choice = _resolve_tools_and_choice(req)
 
+        # 上下文截断：超长消息在构建 prompt 前裁剪到模型窗口内
+        cleaned_messages = CHAT_SERVICE.trim_messages(
+            req.model,
+            cleaned_messages,
+            max_output_tokens=client_max_tokens,
+            enable_thinking=enable_thinking,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
         # 预先构造 prompt 并统计 prompt_tokens（流式/非流式共用，避免重复计算）
         # 此处传入 tools 以使 prompt 统计与真实执行路径尽量一致
         tokenizer = _get_tokenizer_for_model(req.model)
@@ -614,7 +631,11 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
 
             if should_buffer_for_tools:
                 # 工具缓冲模式：通过 Service 层解析工具调用（保持分层架构）
-                parsed_calls = CHAT_SERVICE.parse_tool_calls(req.model, full_text)
+                parsed_calls = CHAT_SERVICE.parse_tool_calls(
+                    req.model,
+                    full_text,
+                    tools=tools,
+                )
 
                 if parsed_calls:
                     # 按 OpenAI 规范推送 tool_calls 增量
@@ -662,6 +683,8 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 finish_reason = _infer_finish_reason(completion_tokens, max_tokens)
 
             reasoning_content, content = parse_thinking_content(full_text)
+            if parsed_calls and content:
+                content = CHAT_SERVICE.strip_tool_call_text(content, parsed_calls)
 
             # ---- 结束 chunk（含 finish_reason）----
             yield _delta_sse(ChatCompletionDelta(), finish_reason=finish_reason)

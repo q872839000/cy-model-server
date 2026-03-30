@@ -17,6 +17,7 @@ from core.config import AppSettings, Config, init_config
 from core.registry import REGISTRY
 from core.exceptions import ModelServerException
 from core.logging import setup_logging
+from workers.async_worker import ASYNC_WORKER
 
 
 def _print_startup_banner(settings: AppSettings) -> None:
@@ -41,7 +42,47 @@ def _print_startup_banner(settings: AppSettings) -> None:
 	print(f"  Health:  http://{host}:{port}/healthz")
 	print("-" * 60)
 	print(f"  Models: LLM={llm} Embedding={emb} Reranker={rerank}")
+	print(f"  Workers: {ASYNC_WORKER.max_workers} threads")
 	print("=" * 60 + "\n")
+
+
+def _compute_auto_workers() -> int:
+	"""根据模型配置自动计算合理的线程池大小
+
+	策略：线程池容量 = 所有 LLM 的 (max_concurrent × replicas) 之和
+	     + embedding/reranker 各预留 1 个线程
+	最终 clamp 到 [4, 128] 范围。
+	"""
+	total = 0
+	models_config = Config.models
+	for llm_cfg in models_config.llms:
+		total += llm_cfg.max_concurrent * llm_cfg.replicas
+
+	# embedding 和 reranker 各预留 1 个线程
+	if models_config.embeddings:
+		total += len(models_config.embeddings)
+	if models_config.rerankers:
+		total += len(models_config.rerankers)
+
+	# clamp 到合理范围
+	return max(4, min(total, 128))
+
+
+def _reconfigure_async_worker(settings: AppSettings) -> None:
+	"""根据配置调整 AsyncWorker 线程池大小
+
+	优先级：
+	1. app.workers 显式配置 → 直接使用
+	2. 未配置 → 从模型配置自动计算
+	"""
+	if settings.workers is not None:
+		max_workers = settings.workers
+		logger.info("AsyncWorker 使用配置值: {} workers", max_workers)
+	else:
+		max_workers = _compute_auto_workers()
+		logger.info("AsyncWorker 自动计算: {} workers", max_workers)
+
+	ASYNC_WORKER.reconfigure(max_workers)
 
 
 class ORJSONResponse(JSONResponse):
@@ -72,6 +113,9 @@ async def lifespan(app: FastAPI):
 				REGISTRY.llm_count(), REGISTRY.embedding_count(), REGISTRY.reranker_count())
 	except Exception as e:
 		logger.error("加载模型配置失败: {}", e)
+
+	# 根据模型配置调整 AsyncWorker 线程池大小
+	_reconfigure_async_worker(settings)
 
 	# Startup: 初始化 Milvus 连接
 	try:
@@ -250,6 +294,7 @@ def _setup_exception_handlers(app: FastAPI) -> None:
 			"MODEL_NOT_FOUND": 404,
 			"CONFIGURATION_ERROR": 400,
 			"UNSUPPORTED_PARAMETER": 400,
+			"CONTEXT_LENGTH_EXCEEDED": 400,
 			"RESOURCE_LIMIT_ERROR": 429,
 			"SERVICE_OVERLOADED": 503,
 			"INFERENCE_ERROR": 500,

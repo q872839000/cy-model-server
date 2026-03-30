@@ -30,8 +30,8 @@ try:
     from vllm.engine.llm_engine import LLMEngine as _LLMEngine
     from vllm.engine.arg_utils import EngineArgs as _EngineArgs
     _VLLM_AVAILABLE = True
-except ImportError:
-    pass
+except ImportError as e:
+    logger.warning("vLLM unavailable, falling back to Transformers engine: {}", e)
 
 
 # 队列哨兵值
@@ -41,13 +41,14 @@ _SENTINEL_DONE = object()
 class _RequestHandle:
     """单个推理请求的句柄，承载结果队列和取消信号"""
 
-    __slots__ = ("request_id", "result_queue", "cancelled", "finished")
+    __slots__ = ("request_id", "result_queue", "cancelled", "finished", "_prev_len")
 
     def __init__(self, request_id: str) -> None:
         self.request_id = request_id
         self.result_queue: queue.Queue = queue.Queue(maxsize=128)
         self.cancelled = False
         self.finished = False
+        self._prev_len = 0
 
     def put_delta(self, delta: str) -> None:
         """投递增量文本"""
@@ -92,6 +93,10 @@ class VLLMLLMEngine(LLMEngine):
 
     @classmethod
     def capabilities(cls) -> EngineCapabilities:
+        """类级别能力声明（未实例化时的默认值）
+
+        实例化后应通过实例调用，此时会检查实际引擎状态。
+        """
         if _VLLM_AVAILABLE:
             return EngineCapabilities(
                 supports_concurrent_requests=True,
@@ -105,6 +110,29 @@ class VLLMLLMEngine(LLMEngine):
             preferred_max_concurrency=1,
         )
 
+    def instance_capabilities(self) -> EngineCapabilities:
+        """实例级别能力声明：基于实际加载结果判断
+
+        - vLLM 引擎加载成功 → 多并发
+        - 回退到 transformers → 单并发
+        - 尚未加载 → 走类级别默认值
+        """
+        if self._fallback is not None:
+            # 已回退到 transformers，报告单并发
+            return EngineCapabilities(
+                supports_concurrent_requests=False,
+                supports_cancel=True,
+                preferred_max_concurrency=1,
+            )
+        if self._llm_engine is not None:
+            return EngineCapabilities(
+                supports_concurrent_requests=True,
+                supports_cancel=True,
+                preferred_max_concurrency=32,
+            )
+        # 尚未加载，走类级别默认
+        return type(self).capabilities()
+
     def __init__(self, model_path: str, dtype: Optional[str] = None,
                  device: Optional[str] = None,
                  gen_params: Optional[Dict[str, Any]] = None,
@@ -116,6 +144,7 @@ class VLLMLLMEngine(LLMEngine):
         self.tensor_parallel_size = tensor_parallel_size
         self._llm_engine = None    # 底层 vLLM LLMEngine
         self._fallback = None      # 回退到 transformers
+        self._supports_tools: Optional[bool] = None
 
         # step-loop 线程管理
         self._step_thread: Optional[threading.Thread] = None
@@ -129,6 +158,41 @@ class VLLMLLMEngine(LLMEngine):
     @property
     def is_vllm_active(self) -> bool:
         return self._llm_engine is not None
+
+    def get_context_window(self) -> Optional[int]:
+        """从 vLLM 引擎获取 max_model_len，回退时委托给 fallback"""
+        if self._llm_engine is not None:
+            try:
+                model_config = getattr(self._llm_engine, "model_config", None)
+                if model_config is not None:
+                    val = getattr(model_config, "max_model_len", None)
+                    if val is not None and isinstance(val, int) and val > 0:
+                        return val
+            except Exception:
+                pass
+        if self._fallback is not None:
+            return self._fallback.get_context_window()
+        return None
+
+    def supports_native_tools_template(self) -> bool:
+        self._ensure_loaded()
+        if self._fallback is not None:
+            return self._fallback.supports_native_tools_template()
+        if self._supports_tools is not None:
+            return self._supports_tools
+        if self._llm_engine is None:
+            self._supports_tools = False
+            return self._supports_tools
+        try:
+            tokenizer = self._llm_engine.get_tokenizer()
+            self._supports_tools = (
+                False if tokenizer is None
+                else self._probe_native_tools_template_support(tokenizer)
+            )
+        except Exception:
+            self._supports_tools = False
+        logger.info("Tokenizer tools 支持: {} (model={})", self._supports_tools, self.model_path)
+        return self._supports_tools
 
     # ==================== Chat Template ====================
 
@@ -147,6 +211,8 @@ class VLLMLLMEngine(LLMEngine):
             return self._fallback.apply_chat_template(
                 messages, tools=tools, **kwargs)
         if self._llm_engine is not None:
+            if tools and not self.supports_native_tools_template():
+                return None
             try:
                 tokenizer = self._llm_engine.get_tokenizer()
                 if tokenizer is None:
@@ -192,6 +258,7 @@ class VLLMLLMEngine(LLMEngine):
                 engine_kwargs: Dict[str, Any] = {
                     "model": self.model_path,
                     "trust_remote_code": True,
+                    "enforce_eager": True,
                 }
                 if self.dtype:
                     engine_kwargs["dtype"] = self.dtype

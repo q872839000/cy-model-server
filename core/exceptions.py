@@ -48,6 +48,25 @@ class InferenceError(ModelServerException):
         )
 
 
+class ContextLengthExceededError(ModelServerException):
+    """输入超过模型上下文窗口限制（对应 HTTP 400）"""
+
+    def __init__(self, model_name: str, prompt_tokens: int, context_window: int):
+        super().__init__(
+            message=(
+                f"输入过长：prompt 已有 {prompt_tokens} tokens，"
+                f"超过模型 '{model_name}' 的上下文窗口 {context_window} tokens。"
+                f"请缩短对话历史或输入内容。"
+            ),
+            error_code="CONTEXT_LENGTH_EXCEEDED",
+            details={
+                "model_name": model_name,
+                "prompt_tokens": prompt_tokens,
+                "context_window": context_window,
+            },
+        )
+
+
 class ConfigurationError(ModelServerException):
     """配置错误异常"""
     

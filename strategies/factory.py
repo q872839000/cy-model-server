@@ -19,6 +19,14 @@ from strategies.glm import GLMBaseStrategy, GLM4Strategy, GLM4Z1Strategy
 # Deepseek 系列
 from strategies.deepseek import DeepseekBaseStrategy, DeepseekR1Strategy
 
+# Phi-4 系列
+from strategies.phi4 import (
+    Phi4BaseStrategy,
+    Phi4MiniStrategy,
+    Phi4ReasoningStrategy,
+    Phi4MiniReasoningStrategy,
+)
+
 
 class StrategyFactory:
     """
@@ -51,6 +59,14 @@ class StrategyFactory:
         
         # Deepseek 系列（系列匹配）
         "deepseek": DeepseekBaseStrategy,
+        
+        # Phi-4 系列（精确匹配）
+        "phi4-mini-reasoning": Phi4MiniReasoningStrategy,
+        "phi4-mini": Phi4MiniStrategy,
+        "phi4-reasoning": Phi4ReasoningStrategy,
+        
+        # Phi-4 系列（系列匹配）
+        "phi4": Phi4BaseStrategy,
         
         # 通用策略
         "generic": GenericChatStrategy,
@@ -119,6 +135,15 @@ class StrategyFactory:
                 resolved_key = "deepseek-r1"
             elif "deepseek" in key:
                 resolved_key = "deepseek"
+            elif "phi4" in key or "phi-4" in key:
+                if "mini" in key and "reason" in key:
+                    resolved_key = "phi4-mini-reasoning"
+                elif "mini" in key:
+                    resolved_key = "phi4-mini"
+                elif "reason" in key:
+                    resolved_key = "phi4-reasoning"
+                else:
+                    resolved_key = "phi4"
             else:
                 resolved_key = "generic"
 

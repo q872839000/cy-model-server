@@ -32,6 +32,10 @@ class AppSettings(BaseSettings):
 	log_level: str = Field(default="INFO")
 	log_format: Optional[str] = Field(default=None)
 	models_config_path: str = Field(default="configs/config.yaml")
+	workers: Optional[int] = Field(
+		default=None,
+		description="AsyncWorker 线程池大小。None 表示根据模型配置自动计算"
+	)
 
 	model_config = SettingsConfigDict(env_prefix="UMS_")
 	

@@ -13,6 +13,14 @@ from engines.base import LLMEngine, EmbeddingEngine, RerankerEngine, EngineCapab
 # 思考模式标记 — 不应被 special token 剥离逻辑移除
 _THINK_TAGS = {'<think>', '</think>'}
 
+# 工具调用相关关键词 — 包含这些关键词的 special token 不应被剥离，
+# 否则 parse_tool_calls() 无法从生成文本中识别工具调用格式。
+# 涵盖常见模型的工具标记：
+#   Qwen3: <tool_call>, </tool_call>
+#   Qwen3-Coder: <tool_call>, </tool_call>, 以及 function/parameter 相关标记
+#   其他模型: tool_calls_begin, tool_calls_end 等变体
+_TOOL_TOKEN_KEYWORDS = {'tool', 'function', 'parameter'}
+
 
 class TransformersLLMEngine(LLMEngine):
     """基于 Hugging Face transformers 的 LLM 引擎封装。
@@ -96,15 +104,35 @@ class TransformersLLMEngine(LLMEngine):
     # ==================== Special Token 管理 ====================
 
     def _get_special_tokens_to_strip(self) -> Set[str]:
-        """获取需要从解码输出中剥离的 special token 集合（惰性缓存）"""
+        """获取需要从解码输出中剥离的 special token 集合（惰性缓存）
+
+        保护策略：排除思考标记和工具调用相关标记。
+        工具调用标记（如 <tool_call>、<function=...>、<parameter=...>）
+        必须保留到 parse_tool_calls() 解析完成后，否则工具调用将无法被识别。
+        """
         if self._special_tokens_to_strip is None:
             tokens = set()
+            preserved = set()
             if self._tokenizer is not None:
                 for tok in getattr(self._tokenizer, 'all_special_tokens', []):
-                    if tok not in _THINK_TAGS:
-                        tokens.add(tok)
+                    if tok in _THINK_TAGS:
+                        preserved.add(tok)
+                        continue
+                    # 保护工具调用相关标记：包含 tool/function/parameter 关键词的 token
+                    tok_lower = tok.lower()
+                    if any(kw in tok_lower for kw in _TOOL_TOKEN_KEYWORDS):
+                        preserved.add(tok)
+                        continue
+                    tokens.add(tok)
             self._special_tokens_to_strip = tokens
-            logger.debug("Special tokens to strip ({}): {}", len(tokens), list(tokens)[:10])
+            if preserved:
+                logger.debug(
+                    "Special tokens to strip ({}): {} | preserved ({}): {}",
+                    len(tokens), sorted(tokens)[:10],
+                    len(preserved), sorted(preserved),
+                )
+            else:
+                logger.debug("Special tokens to strip ({}): {}", len(tokens), sorted(tokens)[:10])
         return self._special_tokens_to_strip
 
     def _clean_decoded_text(self, text: str, strip_think_tags: bool = False) -> str:
@@ -121,33 +149,18 @@ class TransformersLLMEngine(LLMEngine):
                 text = text.replace(tok, '')
         return text
 
-    # ==================== 输入构建 ====================
-
-    def _build_inputs(self, prompt: str) -> dict:
-        """将 prompt 字符串转为模型输入 tensor
-
-        所有 prompt 均为字符串，由 tokenizer 统一编码。
-        自定义 tokenizer（如 ChatGLM4）能正确处理自身的特殊标记
-        （如 [gMASK]<sop>），无需手动构建 token ID。
-        """
-        inputs = self._tokenizer(prompt, return_tensors='pt')
-        return {k: v.to(self._device) for k, v in inputs.items()}
-
     # ==================== Tools 探测 ====================
 
     def _check_tools_support(self) -> bool:
         if self._supports_tools is not None:
             return self._supports_tools
         self._ensure_loaded()
-        try:
-            self._tokenizer.apply_chat_template(
-                [{"role": "user", "content": "test"}],
-                tools=[], tokenize=False, add_generation_prompt=True)
-            self._supports_tools = True
-        except (TypeError, Exception):
-            self._supports_tools = False
+        self._supports_tools = self._probe_native_tools_template_support(self._tokenizer)
         logger.info("Tokenizer tools 支持: {} (model={})", self._supports_tools, self.model_path)
         return self._supports_tools
+
+    def supports_native_tools_template(self) -> bool:
+        return self._check_tools_support()
 
     # ==================== Chat Template ====================
 
@@ -155,7 +168,7 @@ class TransformersLLMEngine(LLMEngine):
         self, messages: list[dict], tools: list[dict] | None = None,
         **kwargs,
     ) -> Optional[str]:
-        """使用 HuggingFace tokenizer 原生 apply_chat_template 构建 prompt
+        """使用 tokenizer.apply_chat_template 构建 prompt
 
         始终使用 tokenize=False 返回字符串。自定义 tokenizer（如 ChatGLM4）
         在 tokenize=True 时可能返回 dict/BatchEncoding 等非标准类型，
@@ -165,7 +178,7 @@ class TransformersLLMEngine(LLMEngine):
             prompt 字符串，或 None（不支持时）
         """
         self._ensure_loaded()
-        if tools and not self._check_tools_support():
+        if tools and not self.supports_native_tools_template():
             return None
         try:
             template_kwargs = self._build_template_kwargs(
@@ -173,7 +186,6 @@ class TransformersLLMEngine(LLMEngine):
             result = self._tokenizer.apply_chat_template(messages, **template_kwargs)
             return str(result) if result is not None and not isinstance(result, str) else result
         except TypeError:
-            # enable_thinking 等参数可能不被 tokenizer 接受，降级重试（不带可选参数）
             template_kwargs_min = {"tokenize": False, "add_generation_prompt": True}
             if tools:
                 template_kwargs_min["tools"] = tools
@@ -186,6 +198,15 @@ class TransformersLLMEngine(LLMEngine):
         except Exception as e:
             logger.warning("tokenizer.apply_chat_template 失败: {}", e)
             return None
+
+    # ==================== 输入构建 ====================
+
+    def _build_inputs(self, prompt: str) -> dict:
+        self._ensure_loaded()
+        tok = self._tokenizer(prompt, return_tensors='pt')
+        if self._device and 'cuda' in str(self._device):
+            tok = {k: v.to(self._model.device) for k, v in tok.items()}
+        return tok
 
     # ==================== 生成 ====================
 
@@ -200,7 +221,7 @@ class TransformersLLMEngine(LLMEngine):
         3. 清理 special tokens 后返回干净文本
         """
         stop = kwargs.pop("stop", None)
-        enable_thinking = kwargs.get('enable_thinking', True)
+        enable_thinking = kwargs.get('enable_thinking', False)
         strip_think = not enable_thinking
 
         if stream:
